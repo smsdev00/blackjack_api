@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blackjack - Player vs House</title>
+    <script src="https://cdn.jsdelivr.net/npm/vue@3.3.4/dist/vue.global.prod.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gradient-to-br from-green-800 via-green-900 to-gray-900 min-h-screen">
+    <div id="app" class="container mx-auto px-4 py-8">
+        <!-- Header -->
+        <div class="text-center mb-8">
+            <h1 class="text-5xl font-bold text-yellow-400 mb-2">Blackjack</h1>
+            <p class="text-white text-lg">Player vs House</p>
+        </div>
+
+        <!-- Start Screen -->
+        <div v-if="!gameId" class="max-w-md mx-auto bg-gray-800 rounded-lg shadow-2xl p-8">
+            <h2 class="text-2xl font-bold text-white mb-6 text-center">Start New Game</h2>
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-white mb-2">Player Name</label>
+                    <input 
+                        v-model="playerName" 
+                        type="text" 
+                        placeholder="Enter your name"
+                        class="w-full px-4 py-2 rounded bg-gray-700 text-white border border-gray-600 focus:border-yellow-400 focus:outline-none"
+                        @keyup.enter="createGame"
+                    >
+                </div>
+                <button 
+                    @click="createGame"
+                    class="w-full bg-yellow-500 hover:bg-yellow-600 text-gray-900 font-bold py-3 px-6 rounded-lg transition duration-200"
+                >
+                    Start Game
+                </button>
+            </div>
+            <div v-if="error" class="mt-4 p-4 bg-red-600 text-white rounded text-sm whitespace-pre-line">
+                {{ error }}
+            </div>
+        </div>
+
+        <!-- Game Screen -->
+        <div v-else class="max-w-6xl mx-auto">
+            <!-- Game Info Bar -->
+            <div class="bg-gray-800 rounded-lg shadow-xl p-6 mb-6">
+                <div class="flex justify-between items-center flex-wrap gap-4">
+                    <div>
+                        <h2 class="text-2xl font-bold text-white">{{ gameState?.player_name }}</h2>
+                        <p class="text-yellow-400 text-xl">Your Chips: ${{ gameState?.player_chips || 0 }}</p>
+                        <p class="text-gray-400 text-sm">Round {{ gameState?.round_number }} | Total: {{ gameState?.total_rounds }}</p>
+                    </div>
+                    <div class="text-right">
+                        <p class="text-green-400 text-xl font-bold">House Pot: ${{ gameState?.house_pot || 0 }}</p>
+                        <p class="text-gray-400 text-sm">
+                            W: {{ gameState?.wins }} | L: {{ gameState?.losses }} | P: {{ gameState?.pushes }}
+                        </p>
+                    </div>
+                    <button 
+                        @click="leaveGame"
+                        class="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-6 rounded-lg transition"
+                    >
+                        Leave Table
+                    </button>
+                </div>
+            </div>
+
+            <!-- Betting Modal -->
+            <div v-if="showBettingModal" class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
+                <div class="bg-gray-800 rounded-lg p-8 max-w-md w-full mx-4">
+                    <h3 class="text-2xl font-bold text-white mb-6">Place Your Bet</h3>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-white mb-2">Main Bet (${{ gameState.minimum_bet }} - ${{ gameState.maximum_bet }})</label>
+                            <input 
+                                v-model.number="mainBet" 
+                                type="number" 
+                                :min="gameState.minimum_bet" 
+                                :max="Math.min(gameState.maximum_bet, gameState.player_chips)"
+                                class="w-full px-4 py-2 rounded bg-gray-700 text-white border border-gray-600"
+                            >
+                        </div>
+                        <div>
+                            <label class="block text-white mb-2">Perfect Pairs Bet (Optional)</label>
+                            <input 
+                                v-model.number="perfectPairsBet" 
+                                type="number" 
+                                min="0" 
+                                :max="gameState.player_chips - mainBet"
+                                class="w-full px-4 py-2 rounded bg-gray-700 text-white border border-gray-600"
+                            >
+                            <p class="text-gray-400 text-sm mt-1">Pays 25:1 perfect, 12:1 colored, 6:1 mixed</p>
+                        </div>
+                        <button 
+                            @click="placeBet"
+                            :disabled="mainBet < gameState.minimum_bet || mainBet > gameState.player_chips"
+                            class="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                            Deal Cards
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Round Result Modal -->
+            <div v-if="showResultModal" class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
+                <div class="bg-gray-800 rounded-lg p-8 max-w-2xl w-full mx-4">
+                    <h3 class="text-3xl font-bold text-center mb-6" :class="getRoundResultColor()">
+                        {{ getRoundResultTitle() }}
+                    </h3>
+                    
+                    <!-- Hand Results -->
+                    <div class="space-y-4 mb-6">
+                        <div v-for="(hand, idx) in gameState.player_hands" :key="idx" 
+                             class="bg-gray-700 rounded-lg p-4">
+                            <div class="flex justify-between items-center mb-2">
+                                <span class="text-white font-bold">
+                                    Hand {{ idx + 1 }}
+                                    <span v-if="hand.is_split_hand" class="text-purple-400 text-sm">(Split)</span>
+                                    <span v-if="hand.is_doubled" class="text-orange-400 text-sm">(Doubled)</span>
+                                </span>
+                                <span class="text-2xl font-bold" :class="getHandResultColor(hand)">
+                                    {{ getHandResultText(hand) }}
+                                </span>
+                            </div>
+                            <div class="grid grid-cols-2 gap-4 text-sm">
+                                <div>
+                                    <p class="text-gray-400">Your Hand</p>
+                                    <p class="text-white font-bold">{{ hand.value }}</p>
+                                </div>
+                                <div>
+                                    <p class="text-gray-400">Dealer Hand</p>
+                                    <p class="text-white font-bold">{{ gameState.dealer_hand.value }}</p>
+                                </div>
+                                <div>
+                                    <p class="text-gray-400">Bet</p>
+                                    <p class="text-yellow-400 font-bold">${{ hand.bet }}</p>
+                                </div>
+                                <div>
+                                    <p class="text-gray-400">Payout</p>
+                                    <p :class="getPayoutColor(hand)" class="font-bold">
+                                        ${{ calculateHandPayout(hand) }}
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Round Summary -->
+                    <div class="bg-gray-700 rounded-lg p-4 mb-6">
+                        <div class="grid grid-cols-3 gap-4 text-center">
+                            <div>
+                                <p class="text-gray-400 text-sm">Total Bet</p>
+                                <p class="text-yellow-400 font-bold text-xl">${{ getTotalBet() }}</p>
+                            </div>
+                            <div>
+                                <p class="text-gray-400 text-sm">Total Payout</p>
+                                <p class="text-green-400 font-bold text-xl">${{ getTotalPayout() }}</p>
+                            </div>
+                            <div>
+                                <p class="text-gray-400 text-sm">Net Result</p>
+                                <p :class="getNetResultColor()" class="font-bold text-xl">
+                                    {{ getNetResult() >= 0 ? '+' : '' }}${{ getNetResult() }}
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Current Stats -->
+                    <div class="bg-gray-700 rounded-lg p-4 mb-6">
+                        <p class="text-gray-400 text-center mb-2">Session Stats</p>
+                        <div class="flex justify-around text-center">
+                            <div>
+                                <p class="text-green-400 font-bold text-2xl">{{ gameState.wins }}</p>
+                                <p class="text-gray-400 text-sm">Wins</p>
+                            </div>
+                            <div>
+                                <p class="text-red-400 font-bold text-2xl">{{ gameState.losses }}</p>
+                                <p class="text-gray-400 text-sm">Losses</p>
+                            </div>
+                            <div>
+                                <p class="text-yellow-400 font-bold text-2xl">{{ gameState.pushes }}</p>
+                                <p class="text-gray-400 text-sm">Pushes</p>
+                            </div>
+                        </div>
+                        <div class="mt-4 text-center">
+                            <p class="text-gray-400 text-sm">Win Rate</p>
+                            <p class="text-white font-bold text-xl">{{ getWinRate() }}%</p>
+                        </div>
+                    </div>
+
+                    <!-- Continue Button -->
+                    <button 
+                        @click="acknowledgeResult"
+                        class="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-4 rounded-lg transition text-xl"
+                    >
+                        Next Round
+                    </button>
+                </div>
+            </div>
+
+            <!-- Game Over Modal -->
+            <div v-if="gameState?.status === 'game_over'" class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
+                <div class="bg-gray-800 rounded-lg p-8 max-w-md w-full mx-4">
+                    <h3 class="text-3xl font-bold text-red-400 mb-4 text-center">Game Over</h3>
+                    <p class="text-white text-center mb-6">You ran out of chips!</p>
+                    <div class="bg-gray-700 rounded p-4 mb-6">
+                        <p class="text-white">Total Rounds: {{ gameState.total_rounds }}</p>
+                        <p class="text-green-400">Wins: {{ gameState.wins }}</p>
+                        <p class="text-red-400">Losses: {{ gameState.losses }}</p>
+                        <p class="text-yellow-400">Pushes: {{ gameState.pushes }}</p>
+                        <p class="text-gray-400 mt-2">Win Rate: {{ getWinRate() }}%</p>
+                    </div>
+                    <button 
+                        @click="leaveGame"
+                        class="w-full bg-yellow-500 hover:bg-yellow-600 text-gray-900 font-bold py-3 rounded-lg"
+                    >
+                        Leave Table
+                    </button>
+                </div>
+            </div>
+
+            <!-- Dealer Section -->
+            <div v-if="gameState?.dealer_hand && gameState?.status !== 'waiting_for_bet'" class="bg-gray-800 rounded-lg shadow-xl p-6 mb-6">
+                <h3 class="text-xl font-bold text-white mb-4">Dealer (House)</h3>
+                <div v-if="gameState?.dealer_hand">
+                    <div class="flex gap-2 mb-3 flex-wrap">
+                        <div 
+                            v-for="(card, idx) in gameState.dealer_hand.cards" 
+                            :key="idx"
+                            class="relative w-20 h-28 rounded-lg shadow-lg"
+                            :class="card.rank === 'hidden' ? 'bg-blue-900 border-2 border-blue-700' : getCardBackground(card)"
+                        >
+                            <div v-if="card.rank !== 'hidden'" class="absolute inset-0 flex flex-col items-center justify-center">
+                                <span class="text-2xl font-bold" :class="getCardColor(card)">{{ card.rank }}</span>
+                                <span class="text-3xl">{{ getCardSuit(card.suit) }}</span>
+                            </div>
+                            <div v-else class="absolute inset-0 flex items-center justify-center">
+                                <span class="text-4xl text-blue-300">?</span>
+                            </div>
+                        </div>
+                    </div>
+                    <p class="text-white text-lg">
+                        Value: <span class="font-bold text-yellow-400">{{ gameState.dealer_hand.value }}</span>
+                        <span v-if="gameState.dealer_hand.is_blackjack" class="ml-2 text-yellow-400 font-bold">BLACKJACK!</span>
+                        <span v-if="gameState.dealer_hand.is_busted" class="ml-2 text-red-400 font-bold">BUSTED!</span>
+                    </p>
+                </div>
+            </div>
+
+            <!-- Player Section -->
+            <div v-if="gameState?.player_hands && gameState?.player_hands.length > 0 && gameState?.status !== 'waiting_for_bet'" class="bg-gray-800 rounded-lg shadow-xl p-6">
+                <h3 class="text-xl font-bold text-white mb-4">Your Hand</h3>
+                
+                <div v-for="(hand, handIdx) in gameState?.player_hands" :key="hand.id" class="mb-6">
+                    <div class="flex gap-2 mb-3 flex-wrap">
+                        <div 
+                            v-for="(card, idx) in hand.cards" 
+                            :key="idx"
+                            class="relative w-20 h-28 rounded-lg shadow-lg"
+                            :class="getCardBackground(card)"
+                        >
+                            <div class="absolute inset-0 flex flex-col items-center justify-center">
+                                <span class="text-2xl font-bold" :class="getCardColor(card)">{{ card.rank }}</span>
+                                <span class="text-3xl">{{ getCardSuit(card.suit) }}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex gap-4 text-white mb-3 flex-wrap">
+                        <p>Value: <span class="font-bold text-yellow-400">{{ hand.value }}</span></p>
+                        <p>Bet: <span class="font-bold text-green-400">${{ hand.bet }}</span></p>
+                        <span v-if="hand.is_blackjack" class="text-yellow-400 font-bold">BLACKJACK!</span>
+                        <span v-if="hand.is_busted" class="text-red-400 font-bold">BUSTED!</span>
+                        <span v-if="hand.is_standing && !hand.is_busted && !hand.is_blackjack" class="text-blue-400 font-bold">STAND</span>
+                        <span v-if="hand.is_split_hand" class="text-purple-400 font-bold">SPLIT HAND</span>
+                        <span v-if="hand.is_doubled" class="text-orange-400 font-bold">DOUBLED</span>
+                    </div>
+                </div>
+
+                <!-- Action Buttons -->
+                <div v-if="gameState?.status === 'player_turn'" class="flex gap-3 flex-wrap">
+                    <button 
+                        @click="performAction('hit')"
+                        class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-8 rounded-lg transition"
+                    >
+                        Hit
+                    </button>
+                    <button 
+                        @click="performAction('stand')"
+                        class="bg-yellow-500 hover:bg-yellow-600 text-gray-900 font-bold py-3 px-8 rounded-lg transition"
+                    >
+                        Stand
+                    </button>
+                    <button 
+                        v-if="canDouble"
+                        @click="performAction('double')"
+                        :disabled="!canAffordDouble"
+                        class="bg-purple-500 hover:bg-purple-600 text-white font-bold py-3 px-8 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                        Double ({{ currentHand?.bet * 2 }})
+                    </button>
+                    <button 
+                        v-if="canSplit"
+                        @click="performAction('split')"
+                        :disabled="!canAffordSplit"
+                        class="bg-pink-500 hover:bg-pink-600 text-white font-bold py-3 px-8 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                        Split ({{ currentHand?.bet }})
+                    </button>
+                    <button 
+                        v-if="gameState.can_take_insurance"
+                        @click="performAction('insurance')"
+                        class="bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 px-8 rounded-lg transition"
+                    >
+                        Insurance ({{ currentHand?.bet / 2 }})
+                    </button>
+                </div>
+            </div>
+
+            <!-- Status Message -->
+            <div class="mt-6 text-center">
+                <p class="text-2xl font-bold text-white">
+                    <span class="text-yellow-400">{{ getStatusText(gameState?.status) }}</span>
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp } = Vue;
+
+        createApp({
+            data() {
+                return {
+                    apiUrl: 'http://localhost:8000',
+                    playerName: '',
+                    gameId: null,
+                    gameState: null,
+                    ws: null,
+                    error: null,
+                    mainBet: 10,
+                    perfectPairsBet: 0,
+                    showResultModal: false,
+                    showBettingModal: false
+                }
+            },
+            computed: {
+                currentHand() {
+                    if (!this.gameState?.player_hands) return null;
+                    return this.gameState.player_hands[this.gameState.current_hand_index];
+                },
+                canDouble() {
+                    return this.currentHand?.cards?.length === 2 && !this.currentHand?.is_doubled;
+                },
+                canAffordDouble() {
+                    return this.gameState?.player_chips >= this.currentHand?.bet;
+                },
+                canSplit() {
+                    if (!this.currentHand?.cards || this.currentHand.cards.length !== 2) return false;
+                    const card1 = this.currentHand.cards[0];
+                    const card2 = this.currentHand.cards[1];
+                    return this.getCardValue(card1) === this.getCardValue(card2);
+                },
+                canAffordSplit() {
+                    return this.gameState?.player_chips >= this.currentHand?.bet;
+                }
+            },
+            methods: {
+                async createGame() {
+                    if (!this.playerName.trim()) {
+                        this.error = 'Please enter your name';
+                        return;
+                    }
+
+                    try {
+                        const response = await fetch(`${this.apiUrl}/games`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ player_name: this.playerName })
+                        });
+
+                        const data = await response.json();
+                        
+                        if (response.ok) {
+                            this.gameId = data.game_id;
+                            this.connectWebSocket();
+                            await this.fetchGameState();
+                            this.error = null;
+                        } else {
+                            this.error = data.detail || 'Failed to create game';
+                        }
+                    } catch (err) {
+                        this.error = 'Failed to connect to server.\n\nMake sure:\n1. Redis is running: sudo systemctl start redis\n2. API is running: python blackjack_api.py';
+                        console.error(err);
+                    }
+                },
+                async placeBet() {
+                    try {
+                        const response = await fetch(`${this.apiUrl}/games/${this.gameId}/bet`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                main_bet: this.mainBet,
+                                perfect_pairs_bet: this.perfectPairsBet
+                            })
+                        });
+
+                        if (response.ok) {
+                            await this.fetchGameState();
+                        }
+                    } catch (err) {
+                        console.error('Error placing bet:', err);
+                    }
+                },
+                async performAction(action) {
+                    try {
+                        await fetch(`${this.apiUrl}/games/${this.gameId}/action`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action })
+                        });
+
+                        await this.fetchGameState();
+                    } catch (err) {
+                        console.error('Error performing action:', err);
+                    }
+                },
+                async fetchGameState() {
+                    try {
+                        const response = await fetch(`${this.apiUrl}/games/${this.gameId}`);
+                        this.gameState = await response.json();
+                        
+                        // Control modals based on status
+                        if (this.gameState.status === 'round_complete') {
+                            this.showResultModal = true;
+                            this.showBettingModal = false;
+                        } else if (this.gameState.status === 'waiting_for_bet') {
+                            if (!this.showResultModal) {
+                                // First bet of game
+                                this.showBettingModal = true;
+                            }
+                        } else {
+                            this.showResultModal = false;
+                            this.showBettingModal = false;
+                        }
+                        
+                        // Set default bet for next round
+                        if (this.gameState.status === 'waiting_for_bet') {
+                            this.mainBet = Math.min(100, this.gameState.player_chips);
+                            this.perfectPairsBet = 0;
+                        }
+                    } catch (err) {
+                        console.error('Error fetching game state:', err);
+                    }
+                },
+                connectWebSocket() {
+                    this.ws = new WebSocket(`ws://localhost:8000/ws/${this.gameId}`);
+                    
+                    this.ws.onmessage = (event) => {
+                        const data = JSON.parse(event.data);
+                        if (data.game_state) {
+                            this.gameState = data.game_state;
+                        }
+                    };
+
+                    this.ws.onerror = (error) => {
+                        console.error('WebSocket error:', error);
+                    };
+
+                    this.ws.onclose = () => {
+                        console.log('WebSocket closed');
+                    };
+                },
+                async leaveGame() {
+                    if (this.ws) {
+                        this.ws.close();
+                    }
+                    
+                    try {
+                        await fetch(`${this.apiUrl}/games/${this.gameId}/leave`, {
+                            method: 'POST'
+                        });
+                    } catch (err) {
+                        console.error('Error leaving game:', err);
+                    }
+
+                    this.gameId = null;
+                    this.gameState = null;
+                },
+                getCardBackground(card) {
+                    if (card.suit === 'hearts' || card.suit === 'diamonds') {
+                        return 'bg-white border-2 border-red-300';
+                    }
+                    return 'bg-white border-2 border-gray-300';
+                },
+                getCardColor(card) {
+                    if (card.suit === 'hearts' || card.suit === 'diamonds') {
+                        return 'text-red-600';
+                    }
+                    return 'text-gray-900';
+                },
+                getCardSuit(suit) {
+                    const suits = {
+                        'hearts': '♥',
+                        'diamonds': '♦',
+                        'clubs': '♣',
+                        'spades': '♠'
+                    };
+                    return suits[suit] || '';
+                },
+                getCardValue(card) {
+                    if (['J', 'Q', 'K'].includes(card.rank)) return 10;
+                    if (card.rank === 'A') return 11;
+                    return parseInt(card.rank);
+                },
+                getStatusText(status) {
+                    const statusMap = {
+                        'waiting_for_bet': 'Place your bet',
+                        'dealing': 'Dealing cards...',
+                        'player_turn': 'Your turn - Make a move',
+                        'dealer_turn': 'Dealer is playing...',
+                        'round_complete': 'Round complete! Place next bet',
+                        'game_over': 'Game Over - Out of chips'
+                    };
+                    return statusMap[status] || status;
+                },
+                acknowledgeResult() {
+                    this.showResultModal = false;
+                    this.showBettingModal = true;
+                },
+                getRoundResultTitle() {
+                    if (!this.gameState?.player_hands) return '';
+                    
+                    const wins = this.gameState.player_hands.filter(h => this.isWinningHand(h)).length;
+                    const losses = this.gameState.player_hands.filter(h => this.isLosingHand(h)).length;
+                    const pushes = this.gameState.player_hands.filter(h => this.isPushHand(h)).length;
+                    
+                    if (wins > 0 && losses === 0) return 'You Win!';
+                    if (losses > 0 && wins === 0) return 'House Wins';
+                    if (pushes === this.gameState.player_hands.length) return 'Push';
+                    return 'Round Complete';
+                },
+                getRoundResultColor() {
+                    if (!this.gameState?.player_hands) return 'text-white';
+                    
+                    const wins = this.gameState.player_hands.filter(h => this.isWinningHand(h)).length;
+                    const losses = this.gameState.player_hands.filter(h => this.isLosingHand(h)).length;
+                    
+                    if (wins > losses) return 'text-green-400';
+                    if (losses > wins) return 'text-red-400';
+                    return 'text-yellow-400';
+                },
+                getHandResultText(hand) {
+                    if (hand.is_blackjack && !this.gameState.dealer_hand.is_blackjack) return 'BLACKJACK!';
+                    if (hand.is_busted) return 'BUST';
+                    if (this.isWinningHand(hand)) return 'WIN';
+                    if (this.isLosingHand(hand)) return 'LOSE';
+                    if (this.isPushHand(hand)) return 'PUSH';
+                    return '';
+                },
+                getHandResultColor(hand) {
+                    if (this.isWinningHand(hand)) return 'text-green-400';
+                    if (this.isLosingHand(hand)) return 'text-red-400';
+                    if (this.isPushHand(hand)) return 'text-yellow-400';
+                    return 'text-white';
+                },
+                isWinningHand(hand) {
+                    if (hand.is_busted) return false;
+                    if (hand.is_blackjack && !this.gameState.dealer_hand.is_blackjack) return true;
+                    if (this.gameState.dealer_hand.is_busted) return true;
+                    return hand.value > this.gameState.dealer_hand.value;
+                },
+                isLosingHand(hand) {
+                    if (hand.is_busted) return true;
+                    if (this.gameState.dealer_hand.is_blackjack && !hand.is_blackjack) return true;
+                    if (this.gameState.dealer_hand.is_busted) return false;
+                    return hand.value < this.gameState.dealer_hand.value;
+                },
+                isPushHand(hand) {
+                    if (hand.is_busted) return false;
+                    if (hand.is_blackjack && this.gameState.dealer_hand.is_blackjack) return true;
+                    return hand.value === this.gameState.dealer_hand.value;
+                },
+                calculateHandPayout(hand) {
+                    if (hand.is_busted) return 0;
+                    if (hand.is_blackjack && !this.gameState.dealer_hand.is_blackjack) {
+                        return hand.bet + Math.floor(hand.bet * 1.5);
+                    }
+                    if (this.isWinningHand(hand)) return hand.bet * 2;
+                    if (this.isPushHand(hand)) return hand.bet;
+                    return 0;
+                },
+                getTotalBet() {
+                    if (!this.gameState?.player_hands) return 0;
+                    return this.gameState.player_hands.reduce((sum, hand) => sum + hand.bet, 0);
+                },
+                getTotalPayout() {
+                    if (!this.gameState?.player_hands) return 0;
+                    return this.gameState.player_hands.reduce((sum, hand) => sum + this.calculateHandPayout(hand), 0);
+                },
+                getNetResult() {
+                    return this.getTotalPayout() - this.getTotalBet();
+                },
+                getNetResultColor() {
+                    const net = this.getNetResult();
+                    if (net > 0) return 'text-green-400';
+                    if (net < 0) return 'text-red-400';
+                    return 'text-yellow-400';
+                },
+                getPayoutColor(hand) {
+                    const payout = this.calculateHandPayout(hand);
+                    if (payout > hand.bet) return 'text-green-400';
+                    if (payout < hand.bet) return 'text-red-400';
+                    return 'text-yellow-400';
+                },
+                getWinRate() {
+                    const total = this.gameState.wins + this.gameState.losses + this.gameState.pushes;
+                    if (total === 0) return 0;
+                    return Math.round((this.gameState.wins / total) * 100);
+                }
+            },
+            beforeUnmount() {
+                if (this.ws) {
+                    this.ws.close();
+                }
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
