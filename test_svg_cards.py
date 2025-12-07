@@ -85,7 +85,7 @@ def generar_carta_svg(valor, palo, ancho=180, alto=250):
         elif valor in ['4', '5', '6', '7', '8', '9', '10']:
             # Rotar la mitad inferior
             total = len(posiciones[valor])
-            return list(range(total // 2, total))
+            #return list(range(total // 2, total))
         return []
     
     rotados = simbolos_a_rotar(valor)
