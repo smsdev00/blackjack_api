@@ -1,17 +1,22 @@
 """
 ═══════════════════════════════════════════════════════════════════════════════
-BLACKJACK ROGUELITE - BACKEND ETAPA 2
+BLACKJACK ROGUELITE - BACKEND ETAPA 2.1
 Sistema de Garitos (Oleadas) + Trampas (Power-ups) + Objetos
++ FIX: Game Over cuando saldo < apuesta mínima
++ NEW: Trampa "Peek Next Card" (ver próxima carta del mazo)
++ NEW: Imágenes de croupier por nivel
 ═══════════════════════════════════════════════════════════════════════════════
 """
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 from enum import Enum
 import random
 import uuid
+import os
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONFIGURACIÓN BASE
@@ -38,6 +43,7 @@ GARITOS = {
         "description": "Donde empiezan los perdedores",
         "dealer_name": "Manco Pete",
         "dealer_personality": "distraído",
+        "dealer_image": "/images/croupier-1.jpg",
         "chips_to_advance": 1000,
         "min_bet": 10,
         "max_bet": 100,
@@ -51,6 +57,7 @@ GARITOS = {
         "description": "Los borrachos apuestan fuerte",
         "dealer_name": "Sally la Sorda",
         "dealer_personality": "lenta",
+        "dealer_image": "/images/croupier-2.jpg",
         "chips_to_advance": 2500,
         "min_bet": 25,
         "max_bet": 250,
@@ -64,6 +71,7 @@ GARITOS = {
         "description": "Aquí juegan los que tienen algo que perder",
         "dealer_name": "Don Rodrigo",
         "dealer_personality": "observador",
+        "dealer_image": "/images/croupier-3.jpg",
         "chips_to_advance": 5000,
         "min_bet": 50,
         "max_bet": 500,
@@ -77,6 +85,7 @@ GARITOS = {
         "description": "Muchos entran, pocos salen con sus fichas",
         "dealer_name": "La Viuda",
         "dealer_personality": "despiadada",
+        "dealer_image": "/images/croupier-4.jpg",
         "chips_to_advance": 10000,
         "min_bet": 100,
         "max_bet": 1000,
@@ -90,6 +99,7 @@ GARITOS = {
         "description": "El garito final. Todo o nada.",
         "dealer_name": "El Diablo",
         "dealer_personality": "omnisciente",
+        "dealer_image": "/images/croupier-5.jpg",
         "chips_to_advance": None,  # Victoria final
         "min_bet": 500,
         "max_bet": 5000,
@@ -106,13 +116,22 @@ GARITOS = {
 
 TRAMPAS = {
     "peek_card": {
-        "name": "Espiar Carta",
+        "name": "Espiar Carta Oculta",
         "description": "Ver la carta oculta del crupier",
         "icon": "👁️",
         "stress_cost": 5,
         "detection_modifier": 0.10,
         "cooldown": 0,  # Puede usarse cada ronda
         "effect": "reveal_dealer",
+    },
+    "peek_next_card": {
+        "name": "Espiar Próxima Carta",
+        "description": "Ver la próxima carta que saldrá del mazo",
+        "icon": "🔮",
+        "stress_cost": 15,
+        "detection_modifier": 0.35,  # MUCHO más riesgoso
+        "cooldown": 1,
+        "effect": "peek_next",
     },
     "swap_card": {
         "name": "Cambiar Carta",
@@ -287,6 +306,12 @@ class Deck:
         """Ver las próximas cartas sin sacarlas"""
         return [c.to_dict() for c in self.cards[-count:]]
     
+    def peek_next(self) -> Dict:
+        """Ver solo la próxima carta sin sacarla"""
+        if self.cards:
+            return self.cards[-1].to_dict()
+        return None
+    
     @property
     def remaining(self) -> int:
         return len(self.cards)
@@ -384,7 +409,7 @@ class PlayerInventory:
     def __init__(self):
         self.items: Dict[str, int] = {}  # item_id -> cantidad
         self.passive_effects: Dict[str, float] = {}  # efecto -> valor acumulado
-        self.unlocked_cheats: List[str] = ["peek_card"]  # Trampas desbloqueadas
+        self.unlocked_cheats: List[str] = ["peek_card", "peek_next_card"]  # Trampas desbloqueadas (peek_next_card disponible desde inicio)
         self.cheat_cooldowns: Dict[str, int] = {}  # trampa -> rondas restantes
         self.guaranteed_cheat: bool = False  # Del cigarro
         self.rewind_available: bool = False
@@ -475,6 +500,7 @@ class Game:
         # Estado de trampas esta ronda
         self.dealer_card_revealed = False
         self.peeked_cards: List[Dict] = []
+        self.next_card_peeked: Optional[Dict] = None  # Nueva: próxima carta espiada
         self.cheat_used_this_round: Optional[str] = None
         
         # Para rewind
@@ -491,6 +517,12 @@ class Game:
         if chips_needed and self.player_chips >= chips_needed:
             return True
         return False
+    
+    def can_afford_minimum_bet(self) -> bool:
+        """Verifica si el jugador puede pagar la apuesta mínima"""
+        garito = self.get_garito()
+        min_bet = garito.get("min_bet", CONFIG["minimum_bet"])
+        return self.player_chips >= min_bet
     
     def advance_garito(self) -> Dict:
         """Avanza al siguiente garito"""
@@ -607,6 +639,12 @@ class Game:
             self.dealer_card_revealed = True
             result["revealed_card"] = self.dealer_hand.cards[1].to_dict()
             result["message"] = f"Ves que el crupier tiene: {self.dealer_hand.cards[1].rank}{self.dealer_hand.cards[1].suit.value}"
+        
+        elif effect == "peek_next":
+            # Nueva trampa: ver la próxima carta del mazo
+            self.next_card_peeked = self.deck.peek_next()
+            result["next_card"] = self.next_card_peeked
+            result["message"] = f"¡La próxima carta será: {self.next_card_peeked['rank']} de {self.next_card_peeked['suit']}!"
         
         elif effect == "swap_worst":
             removed = self.player_hand.remove_worst_card()
@@ -731,6 +769,7 @@ class Game:
         self.player_chips -= amount
         self.dealer_card_revealed = False
         self.peeked_cards = []
+        self.next_card_peeked = None  # Reset de próxima carta espiada
         self.cheat_used_this_round = None
         
         self._deal_initial_cards()
@@ -802,6 +841,7 @@ class Game:
     
     def _hit(self):
         self.player_hand.add_card(self.deck.deal())
+        self.next_card_peeked = None  # Limpiar carta espiada después de usarla
         
         if self.player_hand.is_busted:
             self._end_round("loss", f"¡TE PASASTE! -${self.current_bet}")
@@ -824,6 +864,7 @@ class Game:
         self.current_bet *= 2
         self.player_hand.is_doubled = True
         self.player_hand.add_card(self.deck.deal())
+        self.next_card_peeked = None  # Limpiar carta espiada
         
         if self.player_hand.is_busted:
             self._end_round("loss", f"¡TE PASASTE AL DOBLAR! -${self.current_bet}")
@@ -892,9 +933,17 @@ class Game:
         # Tick cooldowns de trampas
         self.inventory.tick_cooldowns()
         
-        # Verificar game over
+        # Verificar game over - AHORA INCLUYE CHECK DE APUESTA MÍNIMA
+        garito = self.get_garito()
+        min_bet = garito.get("min_bet", CONFIG["minimum_bet"])
+        
         if self.player_chips <= 0:
             self.status = GameStatus.GAME_OVER
+            self.round_message = message  # Mantener mensaje original
+        elif self.player_chips < min_bet:
+            # NUEVO: Game Over si no puedes pagar la apuesta mínima
+            self.status = GameStatus.GAME_OVER
+            self.round_message = f"Sin fichas suficientes para la apuesta mínima (${min_bet}). Te echan del garito..."
         elif self.stress >= CONFIG["max_stress"]:
             self.status = GameStatus.GAME_OVER
             self.round_message = "¡COLAPSO NERVIOSO! El estrés te consume..."
@@ -916,6 +965,7 @@ class Game:
         self.round_message = None
         self.dealer_card_revealed = False
         self.peeked_cards = []
+        self.next_card_peeked = None
         
         return {"can_advance_garito": can_advance}
     
@@ -958,6 +1008,7 @@ class Game:
                 "name": garito["name"],
                 "description": garito["description"],
                 "dealer_name": garito["dealer_name"],
+                "dealer_image": garito.get("dealer_image", "/images/croupier-1.jpg"),
                 "color": garito["color"],
                 "min_bet": garito["min_bet"],
                 "max_bet": garito["max_bet"],
@@ -970,6 +1021,7 @@ class Game:
             "inventory": self.inventory.to_dict(),
             "available_cheats": available_cheats,
             "peeked_cards": self.peeked_cards if self.peeked_cards else None,
+            "next_card_peeked": self.next_card_peeked,  # Nueva: próxima carta espiada
             
             # Stats
             "stats": {
@@ -993,8 +1045,8 @@ class Game:
 
 app = FastAPI(
     title="Blackjack Roguelite API",
-    version="2.0.0",
-    description="Backend para el Blackjack Roguelite - Etapa 2: Garitos + Trampas"
+    version="2.1.0",
+    description="Backend para el Blackjack Roguelite - Etapa 2.1: Fix Game Over + Peek Next Card"
 )
 
 app.add_middleware(
@@ -1004,6 +1056,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Servir imágenes estáticas (crear carpeta images en el mismo directorio)
+# app.mount("/images", StaticFiles(directory="images"), name="images")
 
 games: Dict[str, Game] = {}
 
@@ -1029,8 +1084,8 @@ class ItemRequest(BaseModel):
 def root():
     return {
         "game": "Blackjack Roguelite",
-        "version": "2.0.0 - Etapa 2",
-        "features": ["Garitos", "Trampas", "Objetos", "Estrés"],
+        "version": "2.1.0 - Etapa 2.1",
+        "features": ["Garitos", "Trampas", "Objetos", "Estrés", "Peek Next Card", "Dealer Images"],
         "status": "online"
     }
 
@@ -1218,8 +1273,11 @@ if __name__ == "__main__":
     import uvicorn
     print("""
     ╔═══════════════════════════════════════════════════════════════════════╗
-    ║              BLACKJACK ROGUELITE - ETAPA 2                            ║
+    ║              BLACKJACK ROGUELITE - ETAPA 2.1                          ║
     ║         Sistema de Garitos + Trampas + Objetos                        ║
+    ║         + FIX: Game Over si saldo < apuesta mínima                    ║
+    ║         + NEW: Trampa "Espiar Próxima Carta"                          ║
+    ║         + NEW: Imágenes de croupier por nivel                         ║
     ╠═══════════════════════════════════════════════════════════════════════╣
     ║  Servidor: http://localhost:8000                                      ║
     ║  Docs:     http://localhost:8000/docs                                 ║
@@ -1230,6 +1288,14 @@ if __name__ == "__main__":
     ║  3. El Salón Dorado                                                   ║
     ║  4. La Casa de la Viuda Negra                                         ║
     ║  5. El Infierno de Dante (Final)                                      ║
+    ╠═══════════════════════════════════════════════════════════════════════╣
+    ║  TRAMPAS:                                                             ║
+    ║  👁️ Espiar Carta Oculta - Ver carta del crupier (10% riesgo)          ║
+    ║  🔮 Espiar Próxima Carta - Ver próxima del mazo (35% riesgo!)         ║
+    ║  🔄 Cambiar Carta - Swap tu peor carta (20% riesgo)                   ║
+    ║  🃏 Carta Extra - Hit gratis (25% riesgo)                             ║
+    ║  ✒️ Marcar Mazo - Ver 3 cartas siguientes (15% riesgo)                ║
+    ║  💰 Sobornar - El dealer se equivoca (30% riesgo + $50)               ║
     ╚═══════════════════════════════════════════════════════════════════════╝
     """)
     uvicorn.run(app, host="0.0.0.0", port=8000)
