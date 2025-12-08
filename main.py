@@ -303,8 +303,9 @@ class Deck:
         return self.cards.pop()
     
     def peek(self, count: int = 3) -> List[Dict]:
-        """Ver las próximas cartas sin sacarlas"""
-        return [c.to_dict() for c in self.cards[-count:]]
+        """Ver las próximas cartas sin sacarlas (en orden de salida)"""
+        # Las cartas salen con pop() desde el final, así que invertimos el orden
+        return [c.to_dict() for c in reversed(self.cards[-count:])]
     
     def peek_next(self) -> Dict:
         """Ver solo la próxima carta sin sacarla"""
