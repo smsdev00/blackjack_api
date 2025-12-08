@@ -1,53 +1,221 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+"""
+═══════════════════════════════════════════════════════════════════════════════
+BLACKJACK ROGUELITE - BACKEND ETAPA 2
+Sistema de Garitos (Oleadas) + Trampas (Power-ups) + Objetos
+═══════════════════════════════════════════════════════════════════════════════
+"""
+
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional
 from enum import Enum
 import random
 import uuid
-import json
-import redis
-from datetime import datetime
 
-# Configuration
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONFIGURACIÓN BASE
+# ═══════════════════════════════════════════════════════════════════════════════
+
 CONFIG = {
     "deck_count": 6,
     "dealer_stand_value": 17,
     "blackjack_payout": 1.5,
-    "starting_chips": 1000,
+    "starting_chips": 500,
     "minimum_bet": 10,
     "maximum_bet": 500,
-    "insurance_payout": 2.0,
-    "repeat_last_bet": True,
-    "allow_surrender": True,
-    "perfect_pairs_payout": {
-        "perfect_pair": 25,
-        "colored_pair": 12,
-        "mixed_pair": 6
+    "starting_stress": 0,
+    "max_stress": 100,
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SISTEMA DE GARITOS (OLEADAS)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+GARITOS = {
+    1: {
+        "name": "El Callejón de los Desahuciados",
+        "description": "Donde empiezan los perdedores",
+        "dealer_name": "Manco Pete",
+        "dealer_personality": "distraído",
+        "chips_to_advance": 1000,
+        "min_bet": 10,
+        "max_bet": 100,
+        "cheat_detection_base": 0.15,  # 15% base de detección
+        "special_rules": [],
+        "color": "#33ff33",
+        "unlocks": ["peek_card"],  # Trampa que desbloqueas al ganar
     },
-    "redis_host": "localhost",
-    "redis_port": 6379,
-    "redis_db": 0
+    2: {
+        "name": "La Taberna del Tuerto",
+        "description": "Los borrachos apuestan fuerte",
+        "dealer_name": "Sally la Sorda",
+        "dealer_personality": "lenta",
+        "chips_to_advance": 2500,
+        "min_bet": 25,
+        "max_bet": 250,
+        "cheat_detection_base": 0.25,
+        "special_rules": ["drunk_bonus"],  # +10% en victorias
+        "color": "#ffaa00",
+        "unlocks": ["swap_card"],
+    },
+    3: {
+        "name": "El Salón Dorado",
+        "description": "Aquí juegan los que tienen algo que perder",
+        "dealer_name": "Don Rodrigo",
+        "dealer_personality": "observador",
+        "chips_to_advance": 5000,
+        "min_bet": 50,
+        "max_bet": 500,
+        "cheat_detection_base": 0.35,
+        "special_rules": ["high_roller"],  # Doblar paga 2.5x
+        "color": "#ffd700",
+        "unlocks": ["extra_card"],
+    },
+    4: {
+        "name": "La Casa de la Viuda Negra",
+        "description": "Muchos entran, pocos salen con sus fichas",
+        "dealer_name": "La Viuda",
+        "dealer_personality": "despiadada",
+        "chips_to_advance": 10000,
+        "min_bet": 100,
+        "max_bet": 1000,
+        "cheat_detection_base": 0.45,
+        "special_rules": ["widow_curse"],  # Empates son derrotas
+        "color": "#ff0066",
+        "unlocks": ["mark_deck"],
+    },
+    5: {
+        "name": "El Infierno de Dante",
+        "description": "El garito final. Todo o nada.",
+        "dealer_name": "El Diablo",
+        "dealer_personality": "omnisciente",
+        "chips_to_advance": None,  # Victoria final
+        "min_bet": 500,
+        "max_bet": 5000,
+        "cheat_detection_base": 0.60,
+        "special_rules": ["devils_game"],  # BJ del dealer = pierdes todo
+        "color": "#ff0000",
+        "unlocks": [],
+    },
 }
 
-# Redis connection
-redis_client = redis.Redis(
-    host=CONFIG["redis_host"],
-    port=CONFIG["redis_port"],
-    db=CONFIG["redis_db"],
-    decode_responses=True
-)
+# ═══════════════════════════════════════════════════════════════════════════════
+# SISTEMA DE TRAMPAS (POWER-UPS ACTIVOS)
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# Mysql connection would go here if needed
-mysql_config = {
-    "host": "localhost",
-    "port": 3306,
-    "user": "test",
-    "password": "test",
-    "database": "blackjack_db"
+TRAMPAS = {
+    "peek_card": {
+        "name": "Espiar Carta",
+        "description": "Ver la carta oculta del crupier",
+        "icon": "👁️",
+        "stress_cost": 5,
+        "detection_modifier": 0.10,
+        "cooldown": 0,  # Puede usarse cada ronda
+        "effect": "reveal_dealer",
+    },
+    "swap_card": {
+        "name": "Cambiar Carta",
+        "description": "Cambia tu peor carta por una del mazo",
+        "icon": "🔄",
+        "stress_cost": 15,
+        "detection_modifier": 0.20,
+        "cooldown": 2,
+        "effect": "swap_worst",
+    },
+    "extra_card": {
+        "name": "Carta Extra",
+        "description": "Roba una carta sin que cuente como Hit",
+        "icon": "🃏",
+        "stress_cost": 20,
+        "detection_modifier": 0.25,
+        "cooldown": 3,
+        "effect": "free_card",
+    },
+    "mark_deck": {
+        "name": "Marcar Mazo",
+        "description": "Ve las próximas 3 cartas del mazo",
+        "icon": "✒️",
+        "stress_cost": 10,
+        "detection_modifier": 0.15,
+        "cooldown": 1,
+        "effect": "see_deck",
+    },
+    "bribe": {
+        "name": "Sobornar",
+        "description": "El crupier 'se equivoca' a tu favor",
+        "icon": "💰",
+        "stress_cost": 25,
+        "detection_modifier": 0.30,
+        "chip_cost": 50,  # Cuesta fichas además de estrés
+        "cooldown": 5,
+        "effect": "dealer_mistake",
+    },
 }
 
-# Enums
+# ═══════════════════════════════════════════════════════════════════════════════
+# SISTEMA DE OBJETOS (POWER-UPS PASIVOS/CONSUMIBLES)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+ITEMS = {
+    "whiskey": {
+        "name": "Whiskey Barato",
+        "description": "Reduce 10 de estrés",
+        "icon": "🥃",
+        "price": 25,
+        "effect": "reduce_stress",
+        "value": 10,
+        "consumable": True,
+    },
+    "cigarro": {
+        "name": "Cigarro de la Suerte",
+        "description": "La próxima trampa no puede fallar",
+        "icon": "🚬",
+        "price": 75,
+        "effect": "guaranteed_cheat",
+        "consumable": True,
+    },
+    "dado_cargado": {
+        "name": "Dado Cargado",
+        "description": "+5% probabilidad de BJ esta ronda",
+        "icon": "🎲",
+        "price": 100,
+        "effect": "lucky_draw",
+        "consumable": True,
+    },
+    "gafas_oscuras": {
+        "name": "Gafas Oscuras",
+        "description": "-10% detección de trampas (permanente)",
+        "icon": "🕶️",
+        "price": 200,
+        "effect": "reduce_detection",
+        "value": 0.10,
+        "consumable": False,
+    },
+    "anillo_sello": {
+        "name": "Anillo con Sello",
+        "description": "+15% ganancias en victorias (permanente)",
+        "icon": "💍",
+        "price": 300,
+        "effect": "bonus_winnings",
+        "value": 0.15,
+        "consumable": False,
+    },
+    "reloj_bolsillo": {
+        "name": "Reloj de Bolsillo",
+        "description": "Una vez por garito: repite la última ronda",
+        "icon": "⏱️",
+        "price": 500,
+        "effect": "rewind",
+        "consumable": True,
+        "uses_per_garito": 1,
+    },
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ENUMS
+# ═══════════════════════════════════════════════════════════════════════════════
+
 class Suit(str, Enum):
     HEARTS = "hearts"
     DIAMONDS = "diamonds"
@@ -56,111 +224,127 @@ class Suit(str, Enum):
 
 class GameStatus(str, Enum):
     WAITING_FOR_BET = "waiting_for_bet"
-    DEALING = "dealing"
     PLAYER_TURN = "player_turn"
     DEALER_TURN = "dealer_turn"
     ROUND_COMPLETE = "round_complete"
     GAME_OVER = "game_over"
+    SHOP = "shop"
+    GARITO_TRANSITION = "garito_transition"
 
 class PlayerAction(str, Enum):
     HIT = "hit"
     STAND = "stand"
     DOUBLE = "double"
-    SPLIT = "split"
-    INSURANCE = "insurance"
 
-class HandResult(str, Enum):
-    WIN = "win"
-    LOSS = "loss"
-    PUSH = "push"
-    BLACKJACK = "blackjack"
-    INSURANCE_WIN = "insurance_win"
-    PERFECT_PAIR = "perfect_pair"
-    COLORED_PAIR = "colored_pair"
-    MIXED_PAIR = "mixed_pair"
+class CheatResult(str, Enum):
+    SUCCESS = "success"
+    DETECTED = "detected"
+    SUSPICIOUS = "suspicious"
 
-# Models
+# ═══════════════════════════════════════════════════════════════════════════════
+# MODELOS DE DATOS
+# ═══════════════════════════════════════════════════════════════════════════════
+
 class Card:
     def __init__(self, rank: str, suit: Suit):
         self.rank = rank
         self.suit = suit
+        self.id = f"{rank}-{suit.value}-{uuid.uuid4().hex[:6]}"
     
     def value(self) -> int:
         if self.rank in ['J', 'Q', 'K']:
             return 10
         elif self.rank == 'A':
             return 11
-        else:
-            return int(self.rank)
+        return int(self.rank)
     
     def to_dict(self) -> Dict:
-        return {"rank": self.rank, "suit": self.suit}
-    
-    @staticmethod
-    def from_dict(data: Dict) -> 'Card':
-        return Card(data["rank"], Suit(data["suit"]))
-    
-    def get_color(self) -> str:
-        return "red" if self.suit in [Suit.HEARTS, Suit.DIAMONDS] else "black"
+        return {"rank": self.rank, "suit": self.suit.value, "id": self.id}
+
 
 class Deck:
-    def __init__(self, deck_count: int = 1):
+    def __init__(self, deck_count: int = 6):
         self.cards: List[Card] = []
         self.reset(deck_count)
     
     def reset(self, deck_count: int):
         self.cards = []
         ranks = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
-        suits = list(Suit)
         
         for _ in range(deck_count):
-            for suit in suits:
+            for suit in Suit:
                 for rank in ranks:
                     self.cards.append(Card(rank, suit))
         
         random.shuffle(self.cards)
     
     def deal(self) -> Card:
-        if len(self.cards) < 20:  # Reshuffle if running low
+        if len(self.cards) < 20:
             self.reset(CONFIG["deck_count"])
         return self.cards.pop()
     
-    def to_dict(self) -> List[Dict]:
-        return [card.to_dict() for card in self.cards]
+    def peek(self, count: int = 3) -> List[Dict]:
+        """Ver las próximas cartas sin sacarlas"""
+        return [c.to_dict() for c in self.cards[-count:]]
     
-    @staticmethod
-    def from_dict(data: List[Dict]) -> 'Deck':
-        deck = Deck(0)
-        deck.cards = [Card.from_dict(card_data) for card_data in data]
-        return deck
+    @property
+    def remaining(self) -> int:
+        return len(self.cards)
+
 
 class Hand:
-    def __init__(self, hand_id: str = None):
-        self.id = hand_id or str(uuid.uuid4())
+    def __init__(self):
         self.cards: List[Card] = []
         self.bet: int = 0
-        self.insurance_bet: int = 0
-        self.perfect_pairs_bet: int = 0
         self.is_standing: bool = False
         self.is_busted: bool = False
         self.is_blackjack: bool = False
-        self.is_split_hand: bool = False
         self.is_doubled: bool = False
-        self.parent_hand_id: Optional[str] = None
     
     def add_card(self, card: Card):
         self.cards.append(card)
         self._check_status()
     
-    def calculate_value(self) -> int:
-        value = sum(card.value() for card in self.cards)
-        aces = sum(1 for card in self.cards if card.rank == 'A')
+    def remove_worst_card(self) -> Optional[Card]:
+        """Quita la carta que menos ayuda (para la trampa swap)"""
+        if not self.cards:
+            return None
         
+        current_value = self.calculate_value()
+        worst_card = None
+        best_improvement = -999
+        
+        for i, card in enumerate(self.cards):
+            # Simular quitar esta carta
+            temp_cards = self.cards[:i] + self.cards[i+1:]
+            temp_value = self._calc_value_for_cards(temp_cards)
+            
+            # Queremos acercarnos a 21 sin pasarnos
+            if current_value > 21:
+                improvement = current_value - temp_value
+            else:
+                improvement = 21 - temp_value if temp_value <= 21 else -100
+            
+            if worst_card is None or (current_value > 21 and improvement > best_improvement):
+                worst_card = card
+                best_improvement = improvement
+        
+        if worst_card:
+            self.cards.remove(worst_card)
+            self._check_status()
+        
+        return worst_card
+    
+    def _calc_value_for_cards(self, cards: List[Card]) -> int:
+        value = sum(card.value() for card in cards)
+        aces = sum(1 for card in cards if card.rank == 'A')
         while value > 21 and aces > 0:
             value -= 10
             aces -= 1
-        
         return value
+    
+    def calculate_value(self) -> int:
+        return self._calc_value_for_cards(self.cards)
     
     def _check_status(self):
         value = self.calculate_value()
@@ -169,505 +353,649 @@ class Hand:
             self.is_busted = True
             self.is_standing = True
         
-        if len(self.cards) == 2 and value == 21 and not self.is_split_hand:
+        if len(self.cards) == 2 and value == 21:
             self.is_blackjack = True
             self.is_standing = True
-    
-    def can_split(self) -> bool:
-        return len(self.cards) == 2 and self.cards[0].value() == self.cards[1].value()
     
     def can_double(self) -> bool:
         return len(self.cards) == 2 and not self.is_doubled
     
-    def check_perfect_pairs(self) -> Optional[str]:
-        if len(self.cards) != 2:
-            return None
-        
-        card1, card2 = self.cards[0], self.cards[1]
-        
-        if card1.rank != card2.rank:
-            return None
-        
-        if card1.suit == card2.suit:
-            return "perfect_pair"
-        
-        if card1.get_color() == card2.get_color():
-            return "colored_pair"
-        
-        return "mixed_pair"
-    
-    def split(self) -> 'Hand':
-        if not self.can_split():
-            raise ValueError("Cannot split this hand")
-        
-        new_hand = Hand()
-        new_hand.cards = [self.cards.pop()]
-        new_hand.bet = self.bet
-        new_hand.is_split_hand = True
-        new_hand.parent_hand_id = self.id
-        self.is_split_hand = True
-        
-        return new_hand
-    
     def to_dict(self, hide_second: bool = False) -> Dict:
-        cards = [card.to_dict() for card in self.cards]
-        
-        if hide_second and len(cards) > 1:
+        if hide_second and len(self.cards) > 1:
             return {
-                "id": self.id,
-                "cards": [cards[0], {"rank": "hidden", "suit": "hidden"}],
+                "cards": [self.cards[0].to_dict(), {"rank": "?", "suit": "?", "id": "hidden"}],
                 "value": self.cards[0].value(),
                 "is_standing": self.is_standing,
-                "is_busted": self.is_busted,
-                "is_blackjack": False,
-                "bet": self.bet,
-                "insurance_bet": self.insurance_bet,
-                "perfect_pairs_bet": self.perfect_pairs_bet,
-                "is_doubled": self.is_doubled
+                "is_busted": False,
+                "is_blackjack": False
             }
         
         return {
-            "id": self.id,
-            "cards": cards,
+            "cards": [c.to_dict() for c in self.cards],
             "value": self.calculate_value(),
             "is_standing": self.is_standing,
             "is_busted": self.is_busted,
             "is_blackjack": self.is_blackjack,
-            "bet": self.bet,
-            "insurance_bet": self.insurance_bet,
-            "perfect_pairs_bet": self.perfect_pairs_bet,
-            "is_split_hand": self.is_split_hand,
             "is_doubled": self.is_doubled
         }
+
+
+class PlayerInventory:
+    def __init__(self):
+        self.items: Dict[str, int] = {}  # item_id -> cantidad
+        self.passive_effects: Dict[str, float] = {}  # efecto -> valor acumulado
+        self.unlocked_cheats: List[str] = ["peek_card"]  # Trampas desbloqueadas
+        self.cheat_cooldowns: Dict[str, int] = {}  # trampa -> rondas restantes
+        self.guaranteed_cheat: bool = False  # Del cigarro
+        self.rewind_available: bool = False
     
-    @staticmethod
-    def from_dict(data: Dict) -> 'Hand':
-        hand = Hand(data["id"])
-        hand.cards = [Card.from_dict(c) for c in data["cards"] if c.get("rank") != "hidden"]
-        hand.bet = data["bet"]
-        hand.insurance_bet = data["insurance_bet"]
-        hand.perfect_pairs_bet = data["perfect_pairs_bet"]
-        hand.is_standing = data["is_standing"]
-        hand.is_busted = data["is_busted"]
-        hand.is_blackjack = data["is_blackjack"]
-        hand.is_split_hand = data.get("is_split_hand", False)
-        hand.is_doubled = data.get("is_doubled", False)
-        return hand
+    def add_item(self, item_id: str, quantity: int = 1):
+        self.items[item_id] = self.items.get(item_id, 0) + quantity
+        
+        # Aplicar efectos pasivos inmediatamente
+        item = ITEMS.get(item_id)
+        if item and not item.get("consumable", True):
+            effect = item["effect"]
+            value = item.get("value", 0)
+            self.passive_effects[effect] = self.passive_effects.get(effect, 0) + value
+    
+    def use_item(self, item_id: str) -> bool:
+        if self.items.get(item_id, 0) <= 0:
+            return False
+        
+        item = ITEMS.get(item_id)
+        if not item or not item.get("consumable", True):
+            return False
+        
+        self.items[item_id] -= 1
+        if self.items[item_id] <= 0:
+            del self.items[item_id]
+        
+        return True
+    
+    def unlock_cheat(self, cheat_id: str):
+        if cheat_id not in self.unlocked_cheats:
+            self.unlocked_cheats.append(cheat_id)
+    
+    def can_use_cheat(self, cheat_id: str) -> bool:
+        if cheat_id not in self.unlocked_cheats:
+            return False
+        return self.cheat_cooldowns.get(cheat_id, 0) <= 0
+    
+    def use_cheat(self, cheat_id: str):
+        cheat = TRAMPAS.get(cheat_id)
+        if cheat:
+            self.cheat_cooldowns[cheat_id] = cheat.get("cooldown", 0)
+    
+    def tick_cooldowns(self):
+        for cheat_id in list(self.cheat_cooldowns.keys()):
+            self.cheat_cooldowns[cheat_id] = max(0, self.cheat_cooldowns[cheat_id] - 1)
+    
+    def to_dict(self) -> Dict:
+        return {
+            "items": self.items,
+            "passive_effects": self.passive_effects,
+            "unlocked_cheats": self.unlocked_cheats,
+            "cheat_cooldowns": self.cheat_cooldowns,
+            "guaranteed_cheat": self.guaranteed_cheat,
+        }
+
 
 class Game:
     def __init__(self, game_id: str, player_name: str):
         self.id = game_id
-        self.player_id = str(uuid.uuid4())
         self.player_name = player_name
         self.player_chips = CONFIG["starting_chips"]
-        self.house_pot = 10000  # House starting pot
-        self.deck = Deck(CONFIG["deck_count"])
-        self.player_hands: List[Hand] = []
-        self.dealer_hand: Optional[Hand] = None
-        self.current_hand_index = 0
         self.status = GameStatus.WAITING_FOR_BET
-        self.round_number = 0
-        self.total_rounds_played = 0
-        self.player_wins = 0
-        self.player_losses = 0
-        self.player_pushes = 0
+        self.stress = CONFIG["starting_stress"]
+        
+        # Sistema de garitos
+        self.current_garito = 1
+        self.garitos_completed: List[int] = []
+        
+        # Inventario
+        self.inventory = PlayerInventory()
+        
+        # Estadísticas
+        self.wins = 0
+        self.losses = 0
+        self.pushes = 0
+        self.rounds = 0
+        self.cheats_used = 0
+        self.cheats_detected = 0
+        
+        # Estado de la ronda
+        self.deck = Deck(CONFIG["deck_count"])
+        self.player_hand: Optional[Hand] = None
+        self.dealer_hand: Optional[Hand] = None
+        self.current_bet = 0
+        self.round_result: Optional[str] = None
+        self.round_message: Optional[str] = None
+        
+        # Estado de trampas esta ronda
+        self.dealer_card_revealed = False
+        self.peeked_cards: List[Dict] = []
+        self.cheat_used_this_round: Optional[str] = None
+        
+        # Para rewind
+        self.last_round_state: Optional[Dict] = None
     
-    def can_place_bet(self, amount: int) -> bool:
-        return (amount >= CONFIG["minimum_bet"] and 
-                amount <= CONFIG["maximum_bet"] and
-                amount <= self.player_chips)
+    def get_garito(self) -> Dict:
+        return GARITOS.get(self.current_garito, GARITOS[1])
     
-    def place_bet(self, main_bet: int, perfect_pairs_bet: int = 0):
+    def check_garito_advancement(self) -> bool:
+        """Verifica si el jugador puede avanzar al siguiente garito"""
+        garito = self.get_garito()
+        chips_needed = garito.get("chips_to_advance")
+        
+        if chips_needed and self.player_chips >= chips_needed:
+            return True
+        return False
+    
+    def advance_garito(self) -> Dict:
+        """Avanza al siguiente garito"""
+        if self.current_garito >= 5:
+            return {"success": False, "message": "Ya estás en el garito final"}
+        
+        old_garito = self.get_garito()
+        self.garitos_completed.append(self.current_garito)
+        self.current_garito += 1
+        new_garito = self.get_garito()
+        
+        # Desbloquear trampa del garito anterior
+        for cheat_id in old_garito.get("unlocks", []):
+            self.inventory.unlock_cheat(cheat_id)
+        
+        # Reset rewind para nuevo garito
+        if self.inventory.items.get("reloj_bolsillo", 0) > 0:
+            self.inventory.rewind_available = True
+        
+        self.status = GameStatus.SHOP
+        
+        return {
+            "success": True,
+            "old_garito": old_garito["name"],
+            "new_garito": new_garito["name"],
+            "unlocked_cheats": old_garito.get("unlocks", []),
+            "message": f"¡Bienvenido a {new_garito['name']}!"
+        }
+    
+    def calculate_detection_chance(self, cheat_id: str) -> float:
+        """Calcula la probabilidad de ser detectado al hacer trampa"""
+        garito = self.get_garito()
+        cheat = TRAMPAS.get(cheat_id, {})
+        
+        base = garito.get("cheat_detection_base", 0.20)
+        modifier = cheat.get("detection_modifier", 0.10)
+        
+        # Reducción por objetos pasivos
+        reduction = self.inventory.passive_effects.get("reduce_detection", 0)
+        
+        # El estrés aumenta la detección
+        stress_modifier = self.stress / 200  # +0.5 máximo por estrés
+        
+        final = base + modifier + stress_modifier - reduction
+        return max(0.05, min(0.95, final))  # Entre 5% y 95%
+    
+    def attempt_cheat(self, cheat_id: str) -> Dict:
+        """Intenta hacer una trampa"""
+        if self.status != GameStatus.PLAYER_TURN:
+            return {"success": False, "message": "No es momento de hacer trampas"}
+        
+        if not self.inventory.can_use_cheat(cheat_id):
+            return {"success": False, "message": "Trampa no disponible o en cooldown"}
+        
+        cheat = TRAMPAS.get(cheat_id)
+        if not cheat:
+            return {"success": False, "message": "Trampa desconocida"}
+        
+        # Verificar costo de fichas
+        chip_cost = cheat.get("chip_cost", 0)
+        if chip_cost > 0 and self.player_chips < chip_cost:
+            return {"success": False, "message": "Fichas insuficientes para esta trampa"}
+        
+        # Verificar cigarro de la suerte
+        guaranteed = self.inventory.guaranteed_cheat
+        if guaranteed:
+            self.inventory.guaranteed_cheat = False
+        
+        # Calcular detección
+        detection_chance = self.calculate_detection_chance(cheat_id)
+        roll = random.random()
+        
+        self.cheats_used += 1
+        self.inventory.use_cheat(cheat_id)
+        
+        # Pagar costo de fichas
+        if chip_cost > 0:
+            self.player_chips -= chip_cost
+        
+        # Aumentar estrés
+        stress_cost = cheat.get("stress_cost", 10)
+        self.stress = min(CONFIG["max_stress"], self.stress + stress_cost)
+        
+        result = {
+            "cheat_id": cheat_id,
+            "cheat_name": cheat["name"],
+            "detection_chance": f"{detection_chance*100:.0f}%",
+            "stress_added": stress_cost,
+            "current_stress": self.stress,
+        }
+        
+        if not guaranteed and roll < detection_chance:
+            # ¡Detectado!
+            self.cheats_detected += 1
+            penalty = self.current_bet  # Pierdes la apuesta actual
+            self.stress = min(CONFIG["max_stress"], self.stress + 15)
+            
+            result["result"] = CheatResult.DETECTED.value
+            result["message"] = f"¡{self.get_garito()['dealer_name']} te pilló! Pierdes ${penalty}"
+            result["penalty"] = penalty
+            
+            # Terminar la ronda como pérdida
+            self._end_round("loss", f"¡DETECTADO HACIENDO TRAMPA! -${self.current_bet}")
+            
+            return result
+        
+        # ¡Éxito! Aplicar efecto
+        result["result"] = CheatResult.SUCCESS.value
+        self.cheat_used_this_round = cheat_id
+        
+        effect = cheat["effect"]
+        
+        if effect == "reveal_dealer":
+            self.dealer_card_revealed = True
+            result["revealed_card"] = self.dealer_hand.cards[1].to_dict()
+            result["message"] = f"Ves que el crupier tiene: {self.dealer_hand.cards[1].rank}{self.dealer_hand.cards[1].suit.value}"
+        
+        elif effect == "swap_worst":
+            removed = self.player_hand.remove_worst_card()
+            new_card = self.deck.deal()
+            self.player_hand.add_card(new_card)
+            result["removed_card"] = removed.to_dict() if removed else None
+            result["new_card"] = new_card.to_dict()
+            result["message"] = f"Cambiaste {removed.rank} por {new_card.rank}"
+        
+        elif effect == "free_card":
+            new_card = self.deck.deal()
+            self.player_hand.cards.append(new_card)  # Sin llamar add_card para evitar check de bust
+            # Recalcular manualmente
+            if self.player_hand.calculate_value() > 21:
+                self.player_hand.is_busted = True
+            result["new_card"] = new_card.to_dict()
+            result["message"] = f"Robaste un {new_card.rank} sin que nadie lo note"
+        
+        elif effect == "see_deck":
+            self.peeked_cards = self.deck.peek(3)
+            result["peeked_cards"] = self.peeked_cards
+            result["message"] = "Puedes ver las próximas 3 cartas del mazo"
+        
+        elif effect == "dealer_mistake":
+            # El dealer se "equivoca" - le añadimos una carta mala
+            bad_card = Card("10", random.choice(list(Suit)))
+            self.dealer_hand.add_card(bad_card)
+            result["message"] = "El crupier 'accidentalmente' roba una carta de más"
+        
+        return result
+    
+    def use_item(self, item_id: str) -> Dict:
+        """Usa un objeto consumible"""
+        item = ITEMS.get(item_id)
+        if not item:
+            return {"success": False, "message": "Objeto desconocido"}
+        
+        if not self.inventory.use_item(item_id):
+            return {"success": False, "message": "No tienes ese objeto"}
+        
+        effect = item["effect"]
+        result = {
+            "success": True,
+            "item_name": item["name"],
+            "effect": effect,
+        }
+        
+        if effect == "reduce_stress":
+            reduction = item.get("value", 10)
+            self.stress = max(0, self.stress - reduction)
+            result["message"] = f"Te relajas... Estrés -{reduction}"
+            result["new_stress"] = self.stress
+        
+        elif effect == "guaranteed_cheat":
+            self.inventory.guaranteed_cheat = True
+            result["message"] = "Tu próxima trampa no fallará..."
+        
+        elif effect == "lucky_draw":
+            # Implementado en deal
+            result["message"] = "Sientes que la suerte está de tu lado..."
+        
+        elif effect == "rewind":
+            if self.last_round_state and self.inventory.rewind_available:
+                self._restore_round_state(self.last_round_state)
+                self.inventory.rewind_available = False
+                result["message"] = "El tiempo retrocede..."
+            else:
+                result["success"] = False
+                result["message"] = "No hay ronda que repetir"
+        
+        return result
+    
+    def buy_item(self, item_id: str) -> Dict:
+        """Compra un objeto en la tienda"""
+        if self.status != GameStatus.SHOP:
+            return {"success": False, "message": "La tienda está cerrada"}
+        
+        item = ITEMS.get(item_id)
+        if not item:
+            return {"success": False, "message": "Objeto desconocido"}
+        
+        price = item["price"]
+        if self.player_chips < price:
+            return {"success": False, "message": "Fichas insuficientes"}
+        
+        self.player_chips -= price
+        self.inventory.add_item(item_id)
+        
+        return {
+            "success": True,
+            "item_name": item["name"],
+            "price": price,
+            "remaining_chips": self.player_chips,
+            "message": f"Compraste {item['name']} por ${price}"
+        }
+    
+    def leave_shop(self):
+        """Salir de la tienda y volver a jugar"""
+        self.status = GameStatus.WAITING_FOR_BET
+    
+    def place_bet(self, amount: int):
         if self.status != GameStatus.WAITING_FOR_BET:
-            raise HTTPException(status_code=400, detail="Not in betting phase")
+            raise ValueError("No es momento de apostar")
         
-        if not self.can_place_bet(main_bet):
-            raise HTTPException(status_code=400, detail=f"Invalid bet. Min: {CONFIG['minimum_bet']}, Max: {CONFIG['maximum_bet']}, Your chips: {self.player_chips}")
+        garito = self.get_garito()
+        min_bet = garito.get("min_bet", CONFIG["minimum_bet"])
+        max_bet = garito.get("max_bet", CONFIG["maximum_bet"])
         
-        total_bet = main_bet + perfect_pairs_bet
-        if total_bet > self.player_chips:
-            raise HTTPException(status_code=400, detail="Not enough chips")
+        if amount < min_bet:
+            raise ValueError(f"Apuesta mínima en este garito: ${min_bet}")
         
-        # Create new hand for player
-        hand = Hand()
-        hand.bet = main_bet
-        hand.perfect_pairs_bet = perfect_pairs_bet
-        self.player_hands = [hand]
-        self.current_hand_index = 0
+        if amount > self.player_chips:
+            raise ValueError("Fichas insuficientes")
         
-        # Deduct bet from player chips
-        self.player_chips -= total_bet
+        if amount > max_bet:
+            raise ValueError(f"Apuesta máxima en este garito: ${max_bet}")
         
-        # Start dealing
+        # Guardar estado para rewind
+        self._save_round_state()
+        
+        self.current_bet = amount
+        self.player_chips -= amount
+        self.dealer_card_revealed = False
+        self.peeked_cards = []
+        self.cheat_used_this_round = None
+        
         self._deal_initial_cards()
     
+    def _save_round_state(self):
+        """Guarda el estado actual para posible rewind"""
+        self.last_round_state = {
+            "chips": self.player_chips,
+            "stress": self.stress,
+            "wins": self.wins,
+            "losses": self.losses,
+            "pushes": self.pushes,
+            "rounds": self.rounds,
+        }
+    
+    def _restore_round_state(self, state: Dict):
+        """Restaura un estado guardado"""
+        self.player_chips = state["chips"]
+        self.stress = state["stress"]
+        self.wins = state["wins"]
+        self.losses = state["losses"]
+        self.pushes = state["pushes"]
+        self.rounds = state["rounds"]
+        self.status = GameStatus.WAITING_FOR_BET
+        self.player_hand = None
+        self.dealer_hand = None
+        self.round_result = None
+        self.round_message = None
+    
     def _deal_initial_cards(self):
-        self.status = GameStatus.DEALING
-        self.round_number += 1
-        self.total_rounds_played += 1
-        
-        # Create dealer hand
+        self.player_hand = Hand()
         self.dealer_hand = Hand()
+        self.player_hand.bet = self.current_bet
+        self.round_result = None
+        self.round_message = None
         
-        # Deal cards: player, dealer, player, dealer
-        self.player_hands[0].add_card(self.deck.deal())
+        self.player_hand.add_card(self.deck.deal())
         self.dealer_hand.add_card(self.deck.deal())
-        self.player_hands[0].add_card(self.deck.deal())
+        self.player_hand.add_card(self.deck.deal())
         self.dealer_hand.add_card(self.deck.deal())
         
-        # Check for perfect pairs
-        if self.player_hands[0].perfect_pairs_bet > 0:
-            pair_type = self.player_hands[0].check_perfect_pairs()
-            if pair_type:
-                payout_multiplier = CONFIG["perfect_pairs_payout"][pair_type]
-                winnings = self.player_hands[0].perfect_pairs_bet * (payout_multiplier + 1)
-                self.player_chips += winnings
-                self.house_pot -= winnings
-                self._save_hand_result(pair_type, self.player_hands[0].perfect_pairs_bet, winnings)
-        
-        # Check for dealer blackjack
-        if self.dealer_hand.is_blackjack:
-            self._finish_round()
-        # Check for player blackjack
-        elif self.player_hands[0].is_blackjack:
-            self._finish_round()
+        if self.player_hand.is_blackjack:
+            if self.dealer_hand.is_blackjack:
+                garito = self.get_garito()
+                if "widow_curse" in garito.get("special_rules", []):
+                    self._end_round("loss", "¡LA MALDICIÓN DE LA VIUDA! Empate = Derrota")
+                else:
+                    self._end_round("push", "¡DOBLE BLACKJACK! EMPATE")
+            else:
+                payout = int(self.current_bet * CONFIG["blackjack_payout"])
+                bonus = self.inventory.passive_effects.get("bonus_winnings", 0)
+                if bonus > 0:
+                    payout = int(payout * (1 + bonus))
+                self.player_chips += self.current_bet + payout
+                self._end_round("blackjack", f"¡¡¡BLACKJACK!!! +${payout}")
         else:
             self.status = GameStatus.PLAYER_TURN
     
-    def get_current_hand(self) -> Optional[Hand]:
-        if self.current_hand_index < len(self.player_hands):
-            return self.player_hands[self.current_hand_index]
-        return None
-    
-    def can_take_insurance(self) -> bool:
-        if not self.dealer_hand or len(self.dealer_hand.cards) < 1:
-            return False
-        
-        dealer_up_card = self.dealer_hand.cards[0]
-        current_hand = self.get_current_hand()
-        
-        return (dealer_up_card.rank == 'A' and 
-                current_hand and 
-                len(current_hand.cards) == 2 and
-                current_hand.insurance_bet == 0 and
-                self.player_chips >= current_hand.bet // 2)
-    
-    def player_action(self, action: PlayerAction) -> Dict:
+    def player_action(self, action: PlayerAction):
         if self.status != GameStatus.PLAYER_TURN:
-            raise HTTPException(status_code=400, detail="Not player's turn")
-        
-        hand = self.get_current_hand()
-        if not hand or hand.is_standing:
-            raise HTTPException(status_code=400, detail="No active hand")
+            raise ValueError("No es tu turno")
         
         if action == PlayerAction.HIT:
-            hand.add_card(self.deck.deal())
-            if hand.is_busted or hand.is_standing:
-                self._next_hand()
-            return {"message": "Card dealt"}
-        
+            self._hit()
         elif action == PlayerAction.STAND:
-            hand.is_standing = True
-            self._next_hand()
-            return {"message": "Standing"}
-        
+            self._stand()
         elif action == PlayerAction.DOUBLE:
-            if not hand.can_double():
-                raise HTTPException(status_code=400, detail="Cannot double down")
-            
-            if self.player_chips < hand.bet:
-                raise HTTPException(status_code=400, detail="Not enough chips to double")
-            
-            self.player_chips -= hand.bet
-            hand.bet *= 2
-            hand.is_doubled = True
-            hand.add_card(self.deck.deal())
-            hand.is_standing = True
-            self._next_hand()
-            return {"message": "Doubled down"}
-        
-        elif action == PlayerAction.SPLIT:
-            if not hand.can_split():
-                raise HTTPException(status_code=400, detail="Cannot split")
-            
-            if self.player_chips < hand.bet:
-                raise HTTPException(status_code=400, detail="Not enough chips to split")
-            
-            # Deduct bet for second hand
-            self.player_chips -= hand.bet
-            
-            # Split the hand
-            new_hand = hand.split()
-            self.player_hands.append(new_hand)
-            
-            # Deal one card to each split hand
-            hand.add_card(self.deck.deal())
-            new_hand.add_card(self.deck.deal())
-            
-            return {"message": "Hand split"}
-        
-        elif action == PlayerAction.INSURANCE:
-            if not self.can_take_insurance():
-                raise HTTPException(status_code=400, detail="Cannot take insurance")
-            
-            insurance_amount = hand.bet // 2
-            hand.insurance_bet = insurance_amount
-            self.player_chips -= insurance_amount
-            
-            return {"message": "Insurance taken"}
-        
-        raise HTTPException(status_code=400, detail="Invalid action")
+            self._double()
     
-    def _next_hand(self):
-        self.current_hand_index += 1
+    def _hit(self):
+        self.player_hand.add_card(self.deck.deal())
         
-        # Check if there are more hands to play
-        if self.current_hand_index < len(self.player_hands):
-            current = self.get_current_hand()
-            if current and not current.is_standing:
-                return  # Continue with next hand
-        
-        # All hands played, dealer's turn
-        self._dealer_turn()
+        if self.player_hand.is_busted:
+            self._end_round("loss", f"¡TE PASASTE! -${self.current_bet}")
+        elif self.player_hand.calculate_value() == 21:
+            self._stand()
     
-    def _dealer_turn(self):
+    def _stand(self):
+        self.player_hand.is_standing = True
         self.status = GameStatus.DEALER_TURN
-        
-        # Check if all player hands are busted
-        all_busted = all(hand.is_busted for hand in self.player_hands)
-        
-        if not all_busted:
-            # Dealer must play
-            while self.dealer_hand.calculate_value() < CONFIG["dealer_stand_value"]:
-                self.dealer_hand.add_card(self.deck.deal())
-        
-        self._finish_round()
+        self._dealer_play()
     
-    def _finish_round(self):
-        self.status = GameStatus.ROUND_COMPLETE
-        dealer_value = self.dealer_hand.calculate_value()
-        dealer_busted = self.dealer_hand.is_busted
-        dealer_blackjack = self.dealer_hand.is_blackjack
+    def _double(self):
+        if not self.player_hand.can_double():
+            raise ValueError("No puedes doblar")
         
-        round_result = {
-            "hands": [],
-            "net_change": 0
-        }
+        if self.player_chips < self.current_bet:
+            raise ValueError("Fichas insuficientes para doblar")
         
-        for hand in self.player_hands:
-            hand_value = hand.calculate_value()
-            result = None
-            payout = 0
-            
-            # Process insurance bet
-            if hand.insurance_bet > 0:
-                if dealer_blackjack:
-                    insurance_payout = int(hand.insurance_bet * CONFIG["insurance_payout"])
-                    payout += insurance_payout + hand.insurance_bet
-                    self.house_pot -= insurance_payout
-                    self._save_hand_result(HandResult.INSURANCE_WIN, hand.insurance_bet, insurance_payout)
-                else:
-                    # Insurance lost (already deducted)
-                    self.house_pot += hand.insurance_bet
-            
-            # Player busted
-            if hand.is_busted:
-                result = HandResult.LOSS
-                self.house_pot += hand.bet
-                self.player_losses += 1
-            
-            # Player blackjack
-            elif hand.is_blackjack:
-                if dealer_blackjack:
-                    result = HandResult.PUSH
-                    payout += hand.bet
-                    self.player_pushes += 1
-                else:
-                    result = HandResult.BLACKJACK
-                    blackjack_payout = int(hand.bet * CONFIG["blackjack_payout"])
-                    payout += hand.bet + blackjack_payout
-                    self.house_pot -= blackjack_payout
-                    self.player_wins += 1
-            
-            # Dealer busted or player has higher value
-            elif dealer_busted or hand_value > dealer_value:
-                result = HandResult.WIN
-                payout += hand.bet * 2
-                self.house_pot -= hand.bet
-                self.player_wins += 1
-            
-            # Push
-            elif hand_value == dealer_value:
-                result = HandResult.PUSH
-                payout += hand.bet
-                self.player_pushes += 1
-            
-            # Player lost
-            else:
-                result = HandResult.LOSS
-                self.house_pot += hand.bet
-                self.player_losses += 1
-            
-            self.player_chips += payout
-            round_result["net_change"] += payout - hand.bet - hand.insurance_bet
-            
-            hand_result = {
-                "hand_value": hand_value,
-                "result": result,
-                "bet": hand.bet,
-                "payout": payout,
-                "is_blackjack": hand.is_blackjack,
-                "is_split": hand.is_split_hand,
-                "is_doubled": hand.is_doubled
-            }
-            round_result["hands"].append(hand_result)
-            
-            self._save_hand_result(result, hand.bet, payout)
+        self.player_chips -= self.current_bet
+        self.current_bet *= 2
+        self.player_hand.is_doubled = True
+        self.player_hand.add_card(self.deck.deal())
         
-        # Check if player is broke
-        if self.player_chips < CONFIG["minimum_bet"]:
-            self.status = GameStatus.GAME_OVER
+        if self.player_hand.is_busted:
+            self._end_round("loss", f"¡TE PASASTE AL DOBLAR! -${self.current_bet}")
         else:
-            self.status = GameStatus.WAITING_FOR_BET
-        
-        return round_result
+            self._stand()
     
-    def _save_hand_result(self, result: str, bet: int, payout: int):
-        result_id = str(uuid.uuid4())
-        redis_client.hset(f"hand_result:{result_id}", mapping={
-            "game_id": self.id,
-            "player_id": self.player_id,
-            "result": result,
-            "bet": bet,
-            "payout": payout,
-            "round": self.round_number,
-            "timestamp": datetime.now().isoformat()
-        })
-        redis_client.lpush(f"history:game:{self.id}", result_id)
-        redis_client.lpush(f"history:player:{self.player_id}", result_id)
+    def _dealer_play(self):
+        while self.dealer_hand.calculate_value() < CONFIG["dealer_stand_value"]:
+            self.dealer_hand.add_card(self.deck.deal())
+        
+        self._resolve_round()
+    
+    def _resolve_round(self):
+        player_value = self.player_hand.calculate_value()
+        dealer_value = self.dealer_hand.calculate_value()
+        garito = self.get_garito()
+        
+        # Calcular bonus de ganancias
+        bonus = self.inventory.passive_effects.get("bonus_winnings", 0)
+        
+        # Regla especial: drunk_bonus
+        if "drunk_bonus" in garito.get("special_rules", []):
+            bonus += 0.10
+        
+        # Regla especial: devils_game - BJ del dealer = pierdes todo
+        if "devils_game" in garito.get("special_rules", []) and self.dealer_hand.is_blackjack:
+            total_loss = self.player_chips + self.current_bet
+            self.player_chips = 0
+            self._end_round("loss", f"¡EL DIABLO TIENE BLACKJACK! Pierdes todo: ${total_loss}")
+            return
+        
+        if self.dealer_hand.is_busted:
+            winnings = int(self.current_bet * (1 + bonus))
+            self.player_chips += self.current_bet + winnings
+            self._end_round("win", f"¡CRUPIER SE PASA! +${winnings}")
+        elif player_value > dealer_value:
+            winnings = int(self.current_bet * (1 + bonus))
+            self.player_chips += self.current_bet + winnings
+            self._end_round("win", f"¡GANAS! {player_value} vs {dealer_value} → +${winnings}")
+        elif player_value < dealer_value:
+            self._end_round("loss", f"PIERDES {player_value} vs {dealer_value} → -${self.current_bet}")
+        else:
+            # Empate
+            if "widow_curse" in garito.get("special_rules", []):
+                self._end_round("loss", f"¡MALDICIÓN! Empate = Derrota → -${self.current_bet}")
+            else:
+                self.player_chips += self.current_bet
+                self._end_round("push", f"EMPATE {player_value}")
+    
+    def _end_round(self, result: str, message: str):
+        self.round_result = result
+        self.round_message = message
+        self.rounds += 1
+        
+        if result == "win" or result == "blackjack":
+            self.wins += 1
+            # Reducir estrés al ganar
+            self.stress = max(0, self.stress - 5)
+        elif result == "loss":
+            self.losses += 1
+            # Aumentar estrés al perder
+            self.stress = min(CONFIG["max_stress"], self.stress + 3)
+        else:
+            self.pushes += 1
+        
+        # Tick cooldowns de trampas
+        self.inventory.tick_cooldowns()
+        
+        # Verificar game over
+        if self.player_chips <= 0:
+            self.status = GameStatus.GAME_OVER
+        elif self.stress >= CONFIG["max_stress"]:
+            self.status = GameStatus.GAME_OVER
+            self.round_message = "¡COLAPSO NERVIOSO! El estrés te consume..."
+        else:
+            self.status = GameStatus.ROUND_COMPLETE
+    
+    def new_round(self):
+        if self.status == GameStatus.GAME_OVER:
+            raise ValueError("Game Over")
+        
+        # Verificar si puede avanzar de garito
+        can_advance = self.check_garito_advancement()
+        
+        self.status = GameStatus.WAITING_FOR_BET
+        self.player_hand = None
+        self.dealer_hand = None
+        self.current_bet = 0
+        self.round_result = None
+        self.round_message = None
+        self.dealer_card_revealed = False
+        self.peeked_cards = []
+        
+        return {"can_advance_garito": can_advance}
     
     def to_dict(self) -> Dict:
-        hide_dealer_card = self.status in [GameStatus.DEALING, GameStatus.PLAYER_TURN]
+        garito = self.get_garito()
+        hide_dealer = self.status == GameStatus.PLAYER_TURN and not self.dealer_card_revealed
+        
+        # Lista de trampas disponibles con estado
+        available_cheats = []
+        for cheat_id in self.inventory.unlocked_cheats:
+            cheat = TRAMPAS.get(cheat_id, {})
+            available_cheats.append({
+                "id": cheat_id,
+                "name": cheat.get("name", cheat_id),
+                "description": cheat.get("description", ""),
+                "icon": cheat.get("icon", "?"),
+                "stress_cost": cheat.get("stress_cost", 0),
+                "chip_cost": cheat.get("chip_cost", 0),
+                "can_use": self.inventory.can_use_cheat(cheat_id),
+                "cooldown": self.inventory.cheat_cooldowns.get(cheat_id, 0),
+                "detection_chance": f"{self.calculate_detection_chance(cheat_id)*100:.0f}%" if self.status == GameStatus.PLAYER_TURN else "?",
+            })
         
         return {
-            "game_id": self.id,
-            "player_id": self.player_id,
-            "player_name": self.player_name,
-            "player_chips": self.player_chips,
-            "house_pot": self.house_pot,
-            "status": self.status,
-            "round_number": self.round_number,
-            "total_rounds": self.total_rounds_played,
-            "wins": self.player_wins,
-            "losses": self.player_losses,
-            "pushes": self.player_pushes,
-            "dealer_hand": self.dealer_hand.to_dict(hide_second=hide_dealer_card) if self.dealer_hand else None,
-            "player_hands": [hand.to_dict() for hand in self.player_hands],
-            "current_hand_index": self.current_hand_index,
-            "can_take_insurance": self.can_take_insurance(),
-            "minimum_bet": CONFIG["minimum_bet"],
-            "maximum_bet": CONFIG["maximum_bet"]
-        }
-    
-    def save_to_redis(self):
-        game_data = {
             "id": self.id,
-            "player_id": self.player_id,
             "player_name": self.player_name,
             "player_chips": self.player_chips,
-            "house_pot": self.house_pot,
+            "stress": self.stress,
+            "max_stress": CONFIG["max_stress"],
             "status": self.status.value,
-            "round_number": self.round_number,
-            "total_rounds": self.total_rounds_played,
-            "wins": self.player_wins,
-            "losses": self.player_losses,
-            "pushes": self.player_pushes,
-            "deck": json.dumps(self.deck.to_dict()),
-            "player_hands": json.dumps([h.to_dict() for h in self.player_hands]),
-            "dealer_hand": json.dumps(self.dealer_hand.to_dict()) if self.dealer_hand else "",
-            "current_hand_index": self.current_hand_index
-        }
-        redis_client.hset(f"game:{self.id}", mapping=game_data)
-        redis_client.expire(f"game:{self.id}", 86400)  # Expire after 24 hours
-    
-    @staticmethod
-    def load_from_redis(game_id: str) -> Optional['Game']:
-        data = redis_client.hgetall(f"game:{game_id}")
-        if not data:
-            return None
-        
-        game = Game.__new__(Game)
-        game.id = data["id"]
-        game.player_id = data["player_id"]
-        game.player_name = data["player_name"]
-        game.player_chips = int(data["player_chips"])
-        game.house_pot = int(data["house_pot"])
-        game.status = GameStatus(data["status"])
-        game.round_number = int(data["round_number"])
-        game.total_rounds_played = int(data["total_rounds"])
-        game.player_wins = int(data["wins"])
-        game.player_losses = int(data["losses"])
-        game.player_pushes = int(data["pushes"])
-        game.deck = Deck.from_dict(json.loads(data["deck"]))
-        game.player_hands = [Hand.from_dict(h) for h in json.loads(data["player_hands"])]
-        game.dealer_hand = Hand.from_dict(json.loads(data["dealer_hand"])) if data["dealer_hand"] else None
-        game.current_hand_index = int(data["current_hand_index"])
-        
-        return game
-
-# WebSocket Connection Manager
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: Dict[str, Set[WebSocket]] = {}
-    
-    async def connect(self, websocket: WebSocket, game_id: str):
-        await websocket.accept()
-        if game_id not in self.active_connections:
-            self.active_connections[game_id] = set()
-        self.active_connections[game_id].add(websocket)
-    
-    def disconnect(self, websocket: WebSocket, game_id: str):
-        if game_id in self.active_connections:
-            self.active_connections[game_id].discard(websocket)
-    
-    async def broadcast(self, message: dict, game_id: str):
-        if game_id in self.active_connections:
-            disconnected = set()
-            for connection in self.active_connections[game_id]:
-                try:
-                    await connection.send_json(message)
-                except:
-                    disconnected.add(connection)
+            "current_bet": self.current_bet,
+            "player_hand": self.player_hand.to_dict() if self.player_hand else None,
+            "dealer_hand": self.dealer_hand.to_dict(hide_second=hide_dealer) if self.dealer_hand else None,
+            "round_result": self.round_result,
+            "round_message": self.round_message,
             
-            for conn in disconnected:
-                self.active_connections[game_id].discard(conn)
+            # Garito actual
+            "garito": {
+                "level": self.current_garito,
+                "name": garito["name"],
+                "description": garito["description"],
+                "dealer_name": garito["dealer_name"],
+                "color": garito["color"],
+                "min_bet": garito["min_bet"],
+                "max_bet": garito["max_bet"],
+                "chips_to_advance": garito.get("chips_to_advance"),
+                "special_rules": garito.get("special_rules", []),
+            },
+            "can_advance_garito": self.check_garito_advancement(),
+            
+            # Inventario y trampas
+            "inventory": self.inventory.to_dict(),
+            "available_cheats": available_cheats,
+            "peeked_cards": self.peeked_cards if self.peeked_cards else None,
+            
+            # Stats
+            "stats": {
+                "wins": self.wins,
+                "losses": self.losses,
+                "pushes": self.pushes,
+                "rounds": self.rounds,
+                "cheats_used": self.cheats_used,
+                "cheats_detected": self.cheats_detected,
+            },
+            
+            "deck_remaining": self.deck.remaining,
+            "can_double": self.player_hand.can_double() if self.player_hand and self.status == GameStatus.PLAYER_TURN else False,
+            "can_afford_double": self.player_chips >= self.current_bet
+        }
 
-manager = ConnectionManager()
 
-# In-memory cache
-games: Dict[str, Game] = {}
+# ═══════════════════════════════════════════════════════════════════════════════
+# API
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# API Models
-class CreateGameRequest(BaseModel):
-    player_name: str
-
-class PlaceBetRequest(BaseModel):
-    main_bet: int
-    perfect_pairs_bet: int = 0
-
-class ActionRequest(BaseModel):
-    action: PlayerAction
-
-# FastAPI App
-app = FastAPI(title="Blackjack API", version="3.0.0")
-
-@app.on_event("startup")
-async def startup_event():
-    try:
-        redis_client.ping()
-        print("Redis connection successful")
-    except redis.ConnectionError:
-        print("WARNING: Redis not available")
+app = FastAPI(
+    title="Blackjack Roguelite API",
+    version="2.0.0",
+    description="Backend para el Blackjack Roguelite - Etapa 2: Garitos + Trampas"
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -677,184 +1005,231 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+games: Dict[str, Game] = {}
+
+
+# Request Models
+class CreateGameRequest(BaseModel):
+    player_name: str = "Forastero"
+
+class PlaceBetRequest(BaseModel):
+    amount: int
+
+class ActionRequest(BaseModel):
+    action: PlayerAction
+
+class CheatRequest(BaseModel):
+    cheat_id: str
+
+class ItemRequest(BaseModel):
+    item_id: str
+
+
 @app.get("/")
 def root():
     return {
-        "status": "Blackjack API is running",
-        "version": "3.0.0",
-        "mode": "1v1 Player vs House",
-        "features": [
-            "Persistent sessions",
-            "Multiple rounds per game",
-            "Player and house pots",
-            "Split, Double, Insurance",
-            "Perfect Pairs side bet"
-        ]
+        "game": "Blackjack Roguelite",
+        "version": "2.0.0 - Etapa 2",
+        "features": ["Garitos", "Trampas", "Objetos", "Estrés"],
+        "status": "online"
     }
+
+
+@app.get("/meta/garitos")
+def get_garitos():
+    """Info de todos los garitos"""
+    return GARITOS
+
+
+@app.get("/meta/cheats")
+def get_cheats():
+    """Info de todas las trampas"""
+    return TRAMPAS
+
+
+@app.get("/meta/items")
+def get_items():
+    """Info de todos los objetos"""
+    return ITEMS
+
 
 @app.post("/games")
 def create_game(request: CreateGameRequest):
-    game_id = str(uuid.uuid4())
+    game_id = str(uuid.uuid4())[:8]
     game = Game(game_id, request.player_name)
     games[game_id] = game
-    game.save_to_redis()
+    
+    garito = game.get_garito()
     
     return {
         "game_id": game_id,
-        "player_id": game.player_id,
+        "message": f"Bienvenido a {garito['name']}, {request.player_name}",
         "starting_chips": game.player_chips,
-        "message": "Game created. Place your bet to start."
+        "garito": garito["name"],
+        "dealer": garito["dealer_name"]
     }
 
+
 @app.get("/games/{game_id}")
-def get_game_state(game_id: str):
+def get_game(game_id: str):
     if game_id not in games:
-        game = Game.load_from_redis(game_id)
-        if game:
-            games[game_id] = game
-        else:
-            raise HTTPException(status_code=404, detail="Game not found")
-    
-    game = games[game_id]
-    return game.to_dict()
+        raise HTTPException(status_code=404, detail="Partida no encontrada")
+    return games[game_id].to_dict()
+
 
 @app.post("/games/{game_id}/bet")
-async def place_bet(game_id: str, request: PlaceBetRequest):
+def place_bet(game_id: str, request: PlaceBetRequest):
     if game_id not in games:
-        game = Game.load_from_redis(game_id)
-        if not game:
-            raise HTTPException(status_code=404, detail="Game not found")
-        games[game_id] = game
-    
-    game = games[game_id]
-    game.place_bet(request.main_bet, request.perfect_pairs_bet)
-    game.save_to_redis()
-    
-    await manager.broadcast({
-        "type": "bet_placed",
-        "game_state": game.to_dict()
-    }, game_id)
-    
-    return game.to_dict()
-
-@app.post("/games/{game_id}/action")
-async def player_action(game_id: str, request: ActionRequest):
-    if game_id not in games:
-        game = Game.load_from_redis(game_id)
-        if not game:
-            raise HTTPException(status_code=404, detail="Game not found")
-        games[game_id] = game
-    
-    game = games[game_id]
-    result = game.player_action(request.action)
-    game.save_to_redis()
-    
-    await manager.broadcast({
-        "type": "action_performed",
-        "action": request.action,
-        "game_state": game.to_dict()
-    }, game_id)
-    
-    return game.to_dict()
-
-@app.post("/games/{game_id}/leave")
-async def leave_game(game_id: str):
-    if game_id in games:
-        game = games[game_id]
-        
-        # Save final stats
-        redis_client.hset(f"player_final:{game.player_id}", mapping={
-            "name": game.player_name,
-            "final_chips": game.player_chips,
-            "rounds_played": game.total_rounds_played,
-            "wins": game.player_wins,
-            "losses": game.player_losses,
-            "pushes": game.player_pushes,
-            "ended_at": datetime.now().isoformat()
-        })
-        
-        del games[game_id]
-        
-        await manager.broadcast({
-            "type": "game_ended"
-        }, game_id)
-    
-    return {"message": "Left game successfully"}
-
-@app.get("/games/{game_id}/history")
-def get_game_history(game_id: str):
-    result_ids = redis_client.lrange(f"history:game:{game_id}", 0, 49)  # Last 50 results
-    results = []
-    
-    for result_id in result_ids:
-        result_data = redis_client.hgetall(f"hand_result:{result_id}")
-        if result_data:
-            results.append(result_data)
-    
-    return {"history": results}
-
-@app.get("/players/{player_id}/stats")
-def get_player_stats(player_id: str):
-    # Get current or final stats
-    current_game = None
-    for game in games.values():
-        if game.player_id == player_id:
-            current_game = game
-            break
-    
-    if current_game:
-        return {
-            "player_id": player_id,
-            "name": current_game.player_name,
-            "current_chips": current_game.player_chips,
-            "rounds_played": current_game.total_rounds_played,
-            "wins": current_game.player_wins,
-            "losses": current_game.player_losses,
-            "pushes": current_game.player_pushes,
-            "status": "active"
-        }
-    
-    # Check final stats
-    final_data = redis_client.hgetall(f"player_final:{player_id}")
-    if final_data:
-        return {
-            "player_id": player_id,
-            "name": final_data["name"],
-            "final_chips": int(final_data["final_chips"]),
-            "rounds_played": int(final_data["rounds_played"]),
-            "wins": int(final_data["wins"]),
-            "losses": int(final_data["losses"]),
-            "pushes": int(final_data["pushes"]),
-            "ended_at": final_data["ended_at"],
-            "status": "completed"
-        }
-    
-    raise HTTPException(status_code=404, detail="Player not found")
-
-@app.websocket("/ws/{game_id}")
-async def websocket_endpoint(websocket: WebSocket, game_id: str):
-    await manager.connect(websocket, game_id)
+        raise HTTPException(status_code=404, detail="Partida no encontrada")
     
     try:
-        if game_id in games:
-            await websocket.send_json({
-                "type": "connected",
-                "game_state": games[game_id].to_dict()
-            })
-        
-        while True:
-            data = await websocket.receive_text()
-            await websocket.send_json({
-                "type": "message",
-                "data": data
-            })
+        games[game_id].place_bet(request.amount)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     
-    except WebSocketDisconnect:
-        manager.disconnect(websocket, game_id)
-    except Exception as e:
-        print(f"WebSocket error: {e}")
-        manager.disconnect(websocket, game_id)
+    return games[game_id].to_dict()
+
+
+@app.post("/games/{game_id}/action")
+def player_action(game_id: str, request: ActionRequest):
+    if game_id not in games:
+        raise HTTPException(status_code=404, detail="Partida no encontrada")
+    
+    try:
+        games[game_id].player_action(request.action)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    return games[game_id].to_dict()
+
+
+@app.post("/games/{game_id}/cheat")
+def use_cheat(game_id: str, request: CheatRequest):
+    """Intenta hacer una trampa"""
+    if game_id not in games:
+        raise HTTPException(status_code=404, detail="Partida no encontrada")
+    
+    result = games[game_id].attempt_cheat(request.cheat_id)
+    
+    return {
+        "cheat_result": result,
+        "game_state": games[game_id].to_dict()
+    }
+
+
+@app.post("/games/{game_id}/use-item")
+def use_item(game_id: str, request: ItemRequest):
+    """Usa un objeto del inventario"""
+    if game_id not in games:
+        raise HTTPException(status_code=404, detail="Partida no encontrada")
+    
+    result = games[game_id].use_item(request.item_id)
+    
+    return {
+        "item_result": result,
+        "game_state": games[game_id].to_dict()
+    }
+
+
+@app.post("/games/{game_id}/buy-item")
+def buy_item(game_id: str, request: ItemRequest):
+    """Compra un objeto en la tienda"""
+    if game_id not in games:
+        raise HTTPException(status_code=404, detail="Partida no encontrada")
+    
+    result = games[game_id].buy_item(request.item_id)
+    
+    return {
+        "purchase_result": result,
+        "game_state": games[game_id].to_dict()
+    }
+
+
+@app.post("/games/{game_id}/advance-garito")
+def advance_garito(game_id: str):
+    """Avanza al siguiente garito"""
+    if game_id not in games:
+        raise HTTPException(status_code=404, detail="Partida no encontrada")
+    
+    result = games[game_id].advance_garito()
+    
+    return {
+        "advance_result": result,
+        "game_state": games[game_id].to_dict()
+    }
+
+
+@app.post("/games/{game_id}/leave-shop")
+def leave_shop(game_id: str):
+    """Sale de la tienda"""
+    if game_id not in games:
+        raise HTTPException(status_code=404, detail="Partida no encontrada")
+    
+    games[game_id].leave_shop()
+    
+    return games[game_id].to_dict()
+
+
+@app.post("/games/{game_id}/new-round")
+def new_round(game_id: str):
+    if game_id not in games:
+        raise HTTPException(status_code=404, detail="Partida no encontrada")
+    
+    try:
+        result = games[game_id].new_round()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    return {
+        **games[game_id].to_dict(),
+        **result
+    }
+
+
+@app.delete("/games/{game_id}")
+def leave_game(game_id: str):
+    if game_id not in games:
+        raise HTTPException(status_code=404, detail="Partida no encontrada")
+    
+    game = games[game_id]
+    final_stats = {
+        "player_name": game.player_name,
+        "final_chips": game.player_chips,
+        "profit": game.player_chips - CONFIG["starting_chips"],
+        "rounds_played": game.rounds,
+        "wins": game.wins,
+        "losses": game.losses,
+        "pushes": game.pushes,
+        "cheats_used": game.cheats_used,
+        "cheats_detected": game.cheats_detected,
+        "highest_garito": game.current_garito,
+        "win_rate": f"{(game.wins / game.rounds * 100):.1f}%" if game.rounds > 0 else "0%"
+    }
+    
+    del games[game_id]
+    
+    return {
+        "message": "Hasta la próxima, forastero",
+        "final_stats": final_stats
+    }
+
 
 if __name__ == "__main__":
     import uvicorn
+    print("""
+    ╔═══════════════════════════════════════════════════════════════════════╗
+    ║              BLACKJACK ROGUELITE - ETAPA 2                            ║
+    ║         Sistema de Garitos + Trampas + Objetos                        ║
+    ╠═══════════════════════════════════════════════════════════════════════╣
+    ║  Servidor: http://localhost:8000                                      ║
+    ║  Docs:     http://localhost:8000/docs                                 ║
+    ╠═══════════════════════════════════════════════════════════════════════╣
+    ║  GARITOS:                                                             ║
+    ║  1. El Callejón de los Desahuciados (Inicio)                          ║
+    ║  2. La Taberna del Tuerto                                             ║
+    ║  3. El Salón Dorado                                                   ║
+    ║  4. La Casa de la Viuda Negra                                         ║
+    ║  5. El Infierno de Dante (Final)                                      ║
+    ╚═══════════════════════════════════════════════════════════════════════╝
+    """)
     uvicorn.run(app, host="0.0.0.0", port=8000)

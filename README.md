@@ -1,53 +1,148 @@
-# PROPUESTA DE DISEÑO: BLACKJACK RPG ROGUELITE (TERMINAL EDITION)
+# 🎰 BLACKJACK ROGUELITE - ETAPA 2
 
-## 1. CONCEPTO GENERAL
-Un juego de progresión roguelite con estética oscura tipo DOS. El jugador recorre garitos clandestinos enfrentándose a oponentes pícaros. Combina la mecánica del Blackjack con un sistema de habilidades, gestión de estrés y el apoyo de mascotas mágicas.
+## Sistema de Garitos + Trampas + Objetos
 
-## 2. ARQUITECTURA TÉCNICA
-* **Backend (Python/FastAPI):** Lógica del mazo, motor de probabilidades, gestión de la banca del Capo y validación de trampas.
-* **Frontend (Vue.js 3):** Interfaz reactiva emulando una terminal CRT, gestión de estado (Pinia) y efectos visuales ASCII.
-* **Base de Datos (PostgreSQL):** Persistencia de objetos, desbloqueos permanentes y estadísticas de incursión.
+```
+╔═══════════════════════════════════════════════════════════════╗
+║     "La suerte favorece a los que hacen trampa"               ║
+╚═══════════════════════════════════════════════════════════════╝
+```
 
-## 3. MECÁNICAS DE JUEGO
-### 3.1. El Acompañante: El Goblin Mágico
-* **Habilidad de Transmutación:** Permite transformar una carta una vez por partida.
-* **Evolución:** Mejora con el uso, permitiendo "espiar" la carta oculta o reducir el coste de estrés de las habilidades.
+---
 
-### 3.2. Sistema de Estrés y Juego Sucio
-* **Juego Sucio:** Mecánica para robar cartas extra o intercambiar valores. Su éxito depende de la Percepción del crupier.
-* **Estrés:** Barra de salud mental. Las pérdidas fuertes y las trampas fallidas aumentan el estrés. Al 100%, el jugador sufre una derrota crítica.
+## 🎮 CARACTERÍSTICAS NUEVAS
 
-## 4. ENTORNOS (GARITOS) TEMÁTICOS
-### 4.1. El Bar de Motoqueros "Escape Libre"
-* **Regla:** Apuesta de Motor. Si pierdes la apuesta, el estrés aumenta permanentemente por la pérdida del vehículo.
-### 4.2. La Taberna del Mago "El Cáliz Roto"
-* **Regla:** Mazo Mutante. Los valores de las cartas cambian aleatoriamente cada tres manos.
-### 4.3. La Hacienda (Mansión del Capo)
-* **Regla:** "La Banca Nunca Pierde". Si el Capo tiene pocos fondos, es imposible sacar Blackjack natural.
-* **Derrota Crítica:** Ser detectado haciendo trampa resulta en eliminación inmediata (Plomo).
-### 4.4. El Callejón de los Desahuciados
-* **Regla:** Mazo Desgastado. Algunas cartas son ilegibles (?) y requieren deducción por conteo.
+### 🏚️ Sistema de Garitos (5 niveles)
 
-## 5. GESTIÓN DE PATRIMONIO
-* **Crédito Callejero:** Nivel de experiencia y moneda para desbloquear garitos.
-* **Objetos de Valor:** Reliquias que otorgan ventajas pasivas (ej. Reloj de Oro que reduce el estrés por turno).
+| # | Garito | Crupier | Meta | Detección | Regla Especial |
+|---|--------|---------|------|-----------|----------------|
+| 1 | El Callejón de los Desahuciados | Manco Pete | $1,000 | 15% | - |
+| 2 | La Taberna del Tuerto | Sally la Sorda | $2,500 | 25% | +10% ganancias |
+| 3 | El Salón Dorado | Don Rodrigo | $5,000 | 35% | Doblar paga 2.5x |
+| 4 | La Casa de la Viuda Negra | La Viuda | $10,000 | 45% | Empates = Derrotas |
+| 5 | El Infierno de Dante | El Diablo | ∞ | 60% | BJ dealer = pierdes todo |
 
-## 6. ESQUEMA DE BASE DE DATOS ACTUALIZADO
-### Tabla: Mascotas (Pets)
-* id (UUID)
-* player_id (FK)
-* tipo (Goblin/Cuervo/Rata)
-* nivel (Integer)
-* afinidad (Integer)
+### 🃏 Sistema de Trampas
 
-### Tabla: Garitos_Desbloqueados (Unlocked_Venues)
-* id (UUID)
-* player_id (FK)
-* garito_nombre (String)
-* record_ganancias (Integer)
+| Trampa | Efecto | Estrés | Desbloqueo |
+|--------|--------|--------|------------|
+| 👁️ Espiar Carta | Ver carta oculta del crupier | +5 | Inicio |
+| 🔄 Cambiar Carta | Cambia tu peor carta | +15 | Garito 2 |
+| 🃏 Carta Extra | Roba sin contar como Hit | +20 | Garito 3 |
+| ✒️ Marcar Mazo | Ve las próximas 3 cartas | +10 | Garito 4 |
+| 💰 Sobornar | El crupier "se equivoca" | +25 + $50 | Especial |
 
-### Tabla: Inventario_Permanente (Permanent_Inventory)
-* id (UUID)
-* player_id (FK)
-* item_id (UUID)
-* equipado (Boolean)
+**⚠️ RIESGO:** Si te pillan haciendo trampa, pierdes la apuesta actual y ganas +15 estrés.
+
+### 📦 Tienda de Objetos
+
+| Objeto | Precio | Efecto |
+|--------|--------|--------|
+| 🥃 Whiskey Barato | $25 | -10 estrés |
+| 🚬 Cigarro de la Suerte | $75 | Próxima trampa 100% éxito |
+| 🎲 Dado Cargado | $100 | +5% probabilidad BJ |
+| 🕶️ Gafas Oscuras | $200 | -10% detección (permanente) |
+| 💍 Anillo con Sello | $300 | +15% ganancias (permanente) |
+| ⏱️ Reloj de Bolsillo | $500 | Repite última ronda (1/garito) |
+
+### 😰 Barra de Estrés
+
+- Máximo: 100
+- Hacer trampas aumenta estrés
+- Ser detectado: +15 estrés extra
+- Ganar: -5 estrés
+- Perder: +3 estrés
+- **Si llegas a 100: GAME OVER (colapso nervioso)**
+
+---
+
+## 🚀 CÓMO EJECUTAR
+
+### Backend (Python)
+
+```bash
+cd backend
+pip install -r requirements.txt
+python main.py
+```
+
+El servidor estará en `http://localhost:8000`
+
+### Frontend (React)
+
+El archivo `App.jsx` está diseñado para funcionar con cualquier setup de React.
+
+**Opción 1: Create React App**
+```bash
+npx create-react-app blackjack-roguelite
+cd blackjack-roguelite
+# Reemplaza src/App.jsx con el archivo proporcionado
+npm start
+```
+
+**Opción 2: Vite**
+```bash
+npm create vite@latest blackjack-roguelite -- --template react
+cd blackjack-roguelite
+# Reemplaza src/App.jsx con el archivo proporcionado
+npm install
+npm run dev
+```
+
+---
+
+## 📡 API Endpoints
+
+### Básicos
+```
+POST /games              → Crear partida
+GET  /games/{id}         → Estado actual
+POST /games/{id}/bet     → Apostar
+POST /games/{id}/action  → hit/stand/double
+POST /games/{id}/new-round → Nueva mano
+DELETE /games/{id}       → Salir
+```
+
+### Nuevos (Etapa 2)
+```
+POST /games/{id}/cheat         → Intentar trampa
+POST /games/{id}/use-item      → Usar objeto
+POST /games/{id}/buy-item      → Comprar en tienda
+POST /games/{id}/advance-garito → Avanzar de garito
+POST /games/{id}/leave-shop    → Salir de tienda
+GET  /meta/garitos             → Info de garitos
+GET  /meta/cheats              → Info de trampas
+GET  /meta/items               → Info de objetos
+```
+
+---
+
+## 🎯 ESTRATEGIA
+
+1. **Empieza conservador** - Aprende los patrones del crupier
+2. **Usa trampas con moderación** - El estrés se acumula
+3. **Compra Gafas Oscuras temprano** - La reducción de detección es permanente
+4. **Guarda el Cigarro** - Para momentos críticos
+5. **El Whiskey es tu amigo** - Mantén el estrés bajo control
+6. **Cuidado con La Viuda** - Los empates duelen
+7. **El Diablo no perdona** - Su BJ te arruina
+
+---
+
+## 📝 PRÓXIMAS MEJORAS (Etapa 3)
+
+- [ ] Sonidos (beeps de terminal)
+- [ ] Eventos aleatorios entre rondas
+- [ ] Sistema de logros
+- [ ] Guardado de partida
+- [ ] Más trampas avanzadas
+- [ ] Crupiers con personalidades únicas
+
+---
+
+```
+                    ♠ ♥ ♣ ♦
+        "En el Callejón, todos hacen trampa.
+         La diferencia es quién no lo pillan."
+                    ♦ ♣ ♥ ♠
+```
