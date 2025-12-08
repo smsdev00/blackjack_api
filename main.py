@@ -178,7 +178,7 @@ GARITOS = {
         "cheat_detection_base": 0.60,
         "special_rules": ["devils_game"],  # BJ del dealer = pierdes todo
         "color": "#ff0000",
-        "unlocks": [],
+        "unlocks": ["bribe"],
     },
 }
 
