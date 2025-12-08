@@ -3,3 +3,5 @@ uvicorn
 pydantic
 websockets
 redis
+sqlalchemy
+mysql-connector-python

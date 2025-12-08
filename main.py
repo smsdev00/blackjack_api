@@ -8,15 +8,20 @@ Sistema de Garitos (Oleadas) + Trampas (Power-ups) + Objetos
 ═══════════════════════════════════════════════════════════════════════════════
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 from enum import Enum
+from sqlalchemy.orm import Session
 import random
 import uuid
 import os
+import json
+
+from database import get_db, init_db, SessionLocal
+from models import GameModel, StatsModel, LeaderboardModel
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONFIGURACIÓN BASE
@@ -1039,6 +1044,212 @@ class Game:
             "can_afford_double": self.player_chips >= self.current_bet
         }
 
+    def to_db_model(self) -> Dict:
+        """Serialize game state for database storage"""
+        return {
+            "id": self.id,
+            "player_name": self.player_name,
+            "player_chips": self.player_chips,
+            "stress": self.stress,
+            "status": self.status.value,
+            "current_garito": self.current_garito,
+            "garitos_completed": self.garitos_completed,
+            "inventory_items": self.inventory.items,
+            "inventory_passive_effects": self.inventory.passive_effects,
+            "inventory_unlocked_cheats": self.inventory.unlocked_cheats,
+            "inventory_cheat_cooldowns": self.inventory.cheat_cooldowns,
+            "inventory_guaranteed_cheat": self.inventory.guaranteed_cheat,
+            "inventory_rewind_available": self.inventory.rewind_available,
+            "current_bet": self.current_bet,
+            "player_hand": self._serialize_hand(self.player_hand) if self.player_hand else None,
+            "dealer_hand": self._serialize_hand(self.dealer_hand) if self.dealer_hand else None,
+            "deck_state": [c.to_dict() for c in self.deck.cards],
+            "round_result": self.round_result,
+            "round_message": self.round_message,
+            "dealer_card_revealed": self.dealer_card_revealed,
+            "peeked_cards": self.peeked_cards,
+            "next_card_peeked": self.next_card_peeked,
+            "cheat_used_this_round": self.cheat_used_this_round,
+            "last_round_state": self.last_round_state,
+        }
+
+    def _serialize_hand(self, hand: Hand) -> Dict:
+        """Serialize a Hand object"""
+        return {
+            "cards": [c.to_dict() for c in hand.cards],
+            "bet": hand.bet,
+            "is_standing": hand.is_standing,
+            "is_busted": hand.is_busted,
+            "is_blackjack": hand.is_blackjack,
+            "is_doubled": hand.is_doubled,
+        }
+
+    @classmethod
+    def from_db_model(cls, db_game: GameModel, stats: StatsModel) -> "Game":
+        """Restore game state from database"""
+        game = cls.__new__(cls)
+        game.id = db_game.id
+        game.player_name = db_game.player_name
+        game.player_chips = db_game.player_chips
+        game.status = GameStatus(db_game.status)
+        game.stress = db_game.stress
+        game.current_garito = db_game.current_garito
+        game.garitos_completed = db_game.garitos_completed or []
+
+        # Restore inventory
+        game.inventory = PlayerInventory()
+        game.inventory.items = db_game.inventory_items or {}
+        game.inventory.passive_effects = db_game.inventory_passive_effects or {}
+        game.inventory.unlocked_cheats = db_game.inventory_unlocked_cheats or ["peek_card", "peek_next_card"]
+        game.inventory.cheat_cooldowns = db_game.inventory_cheat_cooldowns or {}
+        game.inventory.guaranteed_cheat = db_game.inventory_guaranteed_cheat or False
+        game.inventory.rewind_available = db_game.inventory_rewind_available or False
+
+        # Restore stats
+        game.wins = stats.wins if stats else 0
+        game.losses = stats.losses if stats else 0
+        game.pushes = stats.pushes if stats else 0
+        game.rounds = stats.rounds if stats else 0
+        game.cheats_used = stats.cheats_used if stats else 0
+        game.cheats_detected = stats.cheats_detected if stats else 0
+
+        # Restore round state
+        game.current_bet = db_game.current_bet or 0
+        game.round_result = db_game.round_result
+        game.round_message = db_game.round_message
+        game.dealer_card_revealed = db_game.dealer_card_revealed or False
+        game.peeked_cards = db_game.peeked_cards or []
+        game.next_card_peeked = db_game.next_card_peeked
+        game.cheat_used_this_round = db_game.cheat_used_this_round
+        game.last_round_state = db_game.last_round_state
+
+        # Restore deck
+        game.deck = Deck(CONFIG["deck_count"])
+        if db_game.deck_state:
+            game.deck.cards = [game._deserialize_card(c) for c in db_game.deck_state]
+
+        # Restore hands
+        game.player_hand = game._deserialize_hand(db_game.player_hand) if db_game.player_hand else None
+        game.dealer_hand = game._deserialize_hand(db_game.dealer_hand) if db_game.dealer_hand else None
+
+        return game
+
+    def _deserialize_hand(self, hand_data: Dict) -> Hand:
+        """Restore a Hand object from dict"""
+        hand = Hand()
+        for card_data in hand_data.get("cards", []):
+            hand.cards.append(self._deserialize_card(card_data))
+        hand.bet = hand_data.get("bet", 0)
+        hand.is_standing = hand_data.get("is_standing", False)
+        hand.is_busted = hand_data.get("is_busted", False)
+        hand.is_blackjack = hand_data.get("is_blackjack", False)
+        hand.is_doubled = hand_data.get("is_doubled", False)
+        return hand
+
+    @staticmethod
+    def _deserialize_card(card_data: Dict) -> Card:
+        """Restore a Card object from dict"""
+        card = Card(card_data["rank"], Suit(card_data["suit"]))
+        card.id = card_data.get("id", card.id)
+        return card
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATABASE HELPERS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def save_game_to_db(game: Game, db: Session):
+    """Save game state to database"""
+    db_data = game.to_db_model()
+
+    db_game = db.query(GameModel).filter(GameModel.id == game.id).first()
+
+    if db_game:
+        # Update existing game
+        for key, value in db_data.items():
+            if key != "id":
+                setattr(db_game, key, value)
+        # Update stats
+        if db_game.stats:
+            db_game.stats.wins = game.wins
+            db_game.stats.losses = game.losses
+            db_game.stats.pushes = game.pushes
+            db_game.stats.rounds = game.rounds
+            db_game.stats.cheats_used = game.cheats_used
+            db_game.stats.cheats_detected = game.cheats_detected
+    else:
+        # Create new game
+        db_game = GameModel(**db_data)
+        db.add(db_game)
+        db.flush()
+        # Create stats
+        stats = StatsModel(
+            game_id=game.id,
+            wins=game.wins,
+            losses=game.losses,
+            pushes=game.pushes,
+            rounds=game.rounds,
+            cheats_used=game.cheats_used,
+            cheats_detected=game.cheats_detected,
+        )
+        db.add(stats)
+
+    db.commit()
+
+
+def load_game_from_db(game_id: str, db: Session) -> Optional[Game]:
+    """Load game state from database"""
+    db_game = db.query(GameModel).filter(GameModel.id == game_id).first()
+    if not db_game:
+        return None
+
+    stats = db.query(StatsModel).filter(StatsModel.game_id == game_id).first()
+    return Game.from_db_model(db_game, stats)
+
+
+def delete_game_from_db(game_id: str, db: Session) -> Optional[Dict]:
+    """Delete game and return final stats for leaderboard"""
+    db_game = db.query(GameModel).filter(GameModel.id == game_id).first()
+    if not db_game:
+        return None
+
+    stats = db.query(StatsModel).filter(StatsModel.game_id == game_id).first()
+
+    final_stats = {
+        "player_name": db_game.player_name,
+        "final_chips": db_game.player_chips,
+        "profit": db_game.player_chips - CONFIG["starting_chips"],
+        "rounds_played": stats.rounds if stats else 0,
+        "wins": stats.wins if stats else 0,
+        "losses": stats.losses if stats else 0,
+        "pushes": stats.pushes if stats else 0,
+        "cheats_used": stats.cheats_used if stats else 0,
+        "cheats_detected": stats.cheats_detected if stats else 0,
+        "highest_garito": db_game.current_garito,
+        "win_rate": f"{(stats.wins / stats.rounds * 100):.1f}%" if stats and stats.rounds > 0 else "0%"
+    }
+
+    # Save to leaderboard
+    leaderboard_entry = LeaderboardModel(
+        player_name=db_game.player_name,
+        final_chips=db_game.player_chips,
+        profit=db_game.player_chips - CONFIG["starting_chips"],
+        highest_garito=db_game.current_garito,
+        rounds_played=stats.rounds if stats else 0,
+        wins=stats.wins if stats else 0,
+        losses=stats.losses if stats else 0,
+        win_rate=(stats.wins / stats.rounds * 100) if stats and stats.rounds > 0 else 0,
+        cheats_used=stats.cheats_used if stats else 0,
+        cheats_detected=stats.cheats_detected if stats else 0,
+    )
+    db.add(leaderboard_entry)
+
+    # Delete the game
+    db.delete(db_game)
+    db.commit()
+
+    return final_stats
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # API
@@ -1061,7 +1272,16 @@ app.add_middleware(
 # Servir imágenes estáticas (crear carpeta images en el mismo directorio)
 # app.mount("/images", StaticFiles(directory="images"), name="images")
 
-games: Dict[str, Game] = {}
+# Initialize database on startup
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database tables on startup"""
+    try:
+        init_db()
+        print("Database initialized successfully")
+    except Exception as e:
+        print(f"Warning: Could not initialize database: {e}")
+        print("Running in memory-only mode")
 
 
 # Request Models
@@ -1110,13 +1330,15 @@ def get_items():
 
 
 @app.post("/games")
-def create_game(request: CreateGameRequest):
+def create_game(request: CreateGameRequest, db: Session = Depends(get_db)):
     game_id = str(uuid.uuid4())[:8]
     game = Game(game_id, request.player_name)
-    games[game_id] = game
-    
+
+    # Save to database
+    save_game_to_db(game, db)
+
     garito = game.get_garito()
-    
+
     return {
         "game_id": game_id,
         "message": f"Bienvenido a {garito['name']}, {request.player_name}",
@@ -1127,146 +1349,188 @@ def create_game(request: CreateGameRequest):
 
 
 @app.get("/games/{game_id}")
-def get_game(game_id: str):
-    if game_id not in games:
+def get_game(game_id: str, db: Session = Depends(get_db)):
+    game = load_game_from_db(game_id, db)
+    if not game:
         raise HTTPException(status_code=404, detail="Partida no encontrada")
-    return games[game_id].to_dict()
+    return game.to_dict()
 
 
 @app.post("/games/{game_id}/bet")
-def place_bet(game_id: str, request: PlaceBetRequest):
-    if game_id not in games:
+def place_bet(game_id: str, request: PlaceBetRequest, db: Session = Depends(get_db)):
+    game = load_game_from_db(game_id, db)
+    if not game:
         raise HTTPException(status_code=404, detail="Partida no encontrada")
-    
+
     try:
-        games[game_id].place_bet(request.amount)
+        game.place_bet(request.amount)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    
-    return games[game_id].to_dict()
+
+    save_game_to_db(game, db)
+    return game.to_dict()
 
 
 @app.post("/games/{game_id}/action")
-def player_action(game_id: str, request: ActionRequest):
-    if game_id not in games:
+def player_action(game_id: str, request: ActionRequest, db: Session = Depends(get_db)):
+    game = load_game_from_db(game_id, db)
+    if not game:
         raise HTTPException(status_code=404, detail="Partida no encontrada")
-    
+
     try:
-        games[game_id].player_action(request.action)
+        game.player_action(request.action)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    
-    return games[game_id].to_dict()
+
+    save_game_to_db(game, db)
+    return game.to_dict()
 
 
 @app.post("/games/{game_id}/cheat")
-def use_cheat(game_id: str, request: CheatRequest):
+def use_cheat(game_id: str, request: CheatRequest, db: Session = Depends(get_db)):
     """Intenta hacer una trampa"""
-    if game_id not in games:
+    game = load_game_from_db(game_id, db)
+    if not game:
         raise HTTPException(status_code=404, detail="Partida no encontrada")
-    
-    result = games[game_id].attempt_cheat(request.cheat_id)
-    
+
+    result = game.attempt_cheat(request.cheat_id)
+    save_game_to_db(game, db)
+
     return {
         "cheat_result": result,
-        "game_state": games[game_id].to_dict()
+        "game_state": game.to_dict()
     }
 
 
 @app.post("/games/{game_id}/use-item")
-def use_item(game_id: str, request: ItemRequest):
+def use_item(game_id: str, request: ItemRequest, db: Session = Depends(get_db)):
     """Usa un objeto del inventario"""
-    if game_id not in games:
+    game = load_game_from_db(game_id, db)
+    if not game:
         raise HTTPException(status_code=404, detail="Partida no encontrada")
-    
-    result = games[game_id].use_item(request.item_id)
-    
+
+    result = game.use_item(request.item_id)
+    save_game_to_db(game, db)
+
     return {
         "item_result": result,
-        "game_state": games[game_id].to_dict()
+        "game_state": game.to_dict()
     }
 
 
 @app.post("/games/{game_id}/buy-item")
-def buy_item(game_id: str, request: ItemRequest):
+def buy_item(game_id: str, request: ItemRequest, db: Session = Depends(get_db)):
     """Compra un objeto en la tienda"""
-    if game_id not in games:
+    game = load_game_from_db(game_id, db)
+    if not game:
         raise HTTPException(status_code=404, detail="Partida no encontrada")
-    
-    result = games[game_id].buy_item(request.item_id)
-    
+
+    result = game.buy_item(request.item_id)
+    save_game_to_db(game, db)
+
     return {
         "purchase_result": result,
-        "game_state": games[game_id].to_dict()
+        "game_state": game.to_dict()
     }
 
 
 @app.post("/games/{game_id}/advance-garito")
-def advance_garito(game_id: str):
+def advance_garito(game_id: str, db: Session = Depends(get_db)):
     """Avanza al siguiente garito"""
-    if game_id not in games:
+    game = load_game_from_db(game_id, db)
+    if not game:
         raise HTTPException(status_code=404, detail="Partida no encontrada")
-    
-    result = games[game_id].advance_garito()
-    
+
+    result = game.advance_garito()
+    save_game_to_db(game, db)
+
     return {
         "advance_result": result,
-        "game_state": games[game_id].to_dict()
+        "game_state": game.to_dict()
     }
 
 
 @app.post("/games/{game_id}/leave-shop")
-def leave_shop(game_id: str):
+def leave_shop(game_id: str, db: Session = Depends(get_db)):
     """Sale de la tienda"""
-    if game_id not in games:
+    game = load_game_from_db(game_id, db)
+    if not game:
         raise HTTPException(status_code=404, detail="Partida no encontrada")
-    
-    games[game_id].leave_shop()
-    
-    return games[game_id].to_dict()
+
+    game.leave_shop()
+    save_game_to_db(game, db)
+
+    return game.to_dict()
 
 
 @app.post("/games/{game_id}/new-round")
-def new_round(game_id: str):
-    if game_id not in games:
+def new_round(game_id: str, db: Session = Depends(get_db)):
+    game = load_game_from_db(game_id, db)
+    if not game:
         raise HTTPException(status_code=404, detail="Partida no encontrada")
-    
+
     try:
-        result = games[game_id].new_round()
+        result = game.new_round()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    
+
+    save_game_to_db(game, db)
+
     return {
-        **games[game_id].to_dict(),
+        **game.to_dict(),
         **result
     }
 
 
 @app.delete("/games/{game_id}")
-def leave_game(game_id: str):
-    if game_id not in games:
+def leave_game(game_id: str, db: Session = Depends(get_db)):
+    final_stats = delete_game_from_db(game_id, db)
+    if not final_stats:
         raise HTTPException(status_code=404, detail="Partida no encontrada")
-    
-    game = games[game_id]
-    final_stats = {
-        "player_name": game.player_name,
-        "final_chips": game.player_chips,
-        "profit": game.player_chips - CONFIG["starting_chips"],
-        "rounds_played": game.rounds,
-        "wins": game.wins,
-        "losses": game.losses,
-        "pushes": game.pushes,
-        "cheats_used": game.cheats_used,
-        "cheats_detected": game.cheats_detected,
-        "highest_garito": game.current_garito,
-        "win_rate": f"{(game.wins / game.rounds * 100):.1f}%" if game.rounds > 0 else "0%"
-    }
-    
-    del games[game_id]
-    
+
     return {
-        "message": "Hasta la próxima, forastero",
+        "message": "Hasta la proxima, forastero",
         "final_stats": final_stats
+    }
+
+
+@app.get("/leaderboard")
+def get_leaderboard(limit: int = 10, db: Session = Depends(get_db)):
+    """Get top players from leaderboard"""
+    entries = db.query(LeaderboardModel).order_by(
+        LeaderboardModel.final_chips.desc()
+    ).limit(limit).all()
+
+    return [
+        {
+            "player_name": e.player_name,
+            "final_chips": e.final_chips,
+            "profit": e.profit,
+            "highest_garito": e.highest_garito,
+            "rounds_played": e.rounds_played,
+            "wins": e.wins,
+            "losses": e.losses,
+            "win_rate": f"{e.win_rate:.1f}%",
+            "date": e.created_at.isoformat() if e.created_at else None
+        }
+        for e in entries
+    ]
+
+
+@app.get("/health")
+def health_check(db: Session = Depends(get_db)):
+    """Health check endpoint"""
+    from sqlalchemy import text
+    try:
+        # Test database connection
+        db.execute(text("SELECT 1"))
+        db_status = "connected"
+    except Exception:
+        db_status = "disconnected"
+
+    return {
+        "status": "healthy",
+        "database": db_status
     }
 
 
