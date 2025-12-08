@@ -16,8 +16,14 @@ class GameModel(Base):
     player_chips = Column(Integer, default=500)
     stress = Column(Integer, default=0)
     status = Column(String(50), default="waiting_for_bet")
+    difficulty = Column(String(20), default="normal")
     current_garito = Column(Integer, default=1)
     garitos_completed = Column(JSON, default=list)
+
+    # Win streak system
+    win_streak = Column(Integer, default=0)
+    max_win_streak = Column(Integer, default=0)
+    last_streak_bonus = Column(Integer, default=0)
 
     # Inventory stored as JSON
     inventory_items = Column(JSON, default=dict)

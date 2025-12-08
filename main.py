@@ -1,10 +1,13 @@
 """
 ═══════════════════════════════════════════════════════════════════════════════
-BLACKJACK ROGUELITE - BACKEND ETAPA 2.1
+BLACKJACK ROGUELITE - BACKEND ETAPA 3.0
 Sistema de Garitos (Oleadas) + Trampas (Power-ups) + Objetos
 + FIX: Game Over cuando saldo < apuesta mínima
 + NEW: Trampa "Peek Next Card" (ver próxima carta del mazo)
 + NEW: Imágenes de croupier por nivel
++ NEW: Sistema de DIFICULTAD (fácil, normal, difícil)
++ NEW: Sistema de WIN STREAK con multiplicadores
++ NEW: Items multiplicadores de bonus
 ═══════════════════════════════════════════════════════════════════════════════
 """
 
@@ -36,6 +39,70 @@ CONFIG = {
     "maximum_bet": 500,
     "starting_stress": 0,
     "max_stress": 100,
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SISTEMA DE DIFICULTAD
+# ═══════════════════════════════════════════════════════════════════════════════
+
+DIFFICULTY_SETTINGS = {
+    "easy": {
+        "name": "Novato",
+        "description": "Para los que empiezan en el juego",
+        "icon": "🌟",
+        "starting_chips": 750,
+        "starting_stress": 0,
+        "stress_gain_loss": 2,           # Estrés ganado al perder
+        "stress_gain_detected": 10,      # Estrés ganado al ser detectado
+        "stress_reduction_win": 8,       # Estrés reducido al ganar
+        "detection_modifier": -0.10,     # -10% detección base
+        "win_streak_multipliers": {      # Multiplicadores de racha
+            2: 1.5,   # 2 victorias = x1.5
+            3: 2.0,   # 3 victorias = x2
+            4: 3.0,   # 4 victorias = x3
+            5: 5.0,   # 5+ victorias = x5
+        },
+        "blackjack_streak_bonus": 1.5,   # Bonus extra si BJ en racha
+        "base_streak_multiplier": 1.0,   # Multiplicador base de racha
+    },
+    "normal": {
+        "name": "Tahur",
+        "description": "El modo clasico",
+        "icon": "🎰",
+        "starting_chips": 500,
+        "starting_stress": 10,
+        "stress_gain_loss": 3,
+        "stress_gain_detected": 15,
+        "stress_reduction_win": 5,
+        "detection_modifier": 0,
+        "win_streak_multipliers": {
+            2: 2.0,   # 2 victorias = x2
+            3: 3.0,   # 3 victorias = x3
+            4: 4.0,   # 4 victorias = x4
+            5: 10.0,  # 5+ victorias = x10
+        },
+        "blackjack_streak_bonus": 2.0,
+        "base_streak_multiplier": 1.0,
+    },
+    "hard": {
+        "name": "Suicida",
+        "description": "Solo para los mas temerarios",
+        "icon": "💀",
+        "starting_chips": 300,
+        "starting_stress": 25,
+        "stress_gain_loss": 5,
+        "stress_gain_detected": 20,
+        "stress_reduction_win": 3,
+        "detection_modifier": 0.10,      # +10% detección base
+        "win_streak_multipliers": {
+            2: 2.5,   # 2 victorias = x2.5
+            3: 4.0,   # 3 victorias = x4
+            4: 6.0,   # 4 victorias = x6
+            5: 15.0,  # 5+ victorias = x15
+        },
+        "blackjack_streak_bonus": 3.0,
+        "base_streak_multiplier": 1.0,
+    },
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -184,7 +251,7 @@ TRAMPAS = {
 ITEMS = {
     "whiskey": {
         "name": "Whiskey Barato",
-        "description": "Reduce 10 de estrés",
+        "description": "Reduce 10 de estres",
         "icon": "🥃",
         "price": 25,
         "effect": "reduce_stress",
@@ -193,7 +260,7 @@ ITEMS = {
     },
     "cigarro": {
         "name": "Cigarro de la Suerte",
-        "description": "La próxima trampa no puede fallar",
+        "description": "La proxima trampa no puede fallar",
         "icon": "🚬",
         "price": 75,
         "effect": "guaranteed_cheat",
@@ -209,7 +276,7 @@ ITEMS = {
     },
     "gafas_oscuras": {
         "name": "Gafas Oscuras",
-        "description": "-10% detección de trampas (permanente)",
+        "description": "-10% deteccion de trampas (permanente)",
         "icon": "🕶️",
         "price": 200,
         "effect": "reduce_detection",
@@ -227,12 +294,48 @@ ITEMS = {
     },
     "reloj_bolsillo": {
         "name": "Reloj de Bolsillo",
-        "description": "Una vez por garito: repite la última ronda",
+        "description": "Una vez por garito: repite la ultima ronda",
         "icon": "⏱️",
         "price": 500,
         "effect": "rewind",
         "consumable": True,
         "uses_per_garito": 1,
+    },
+    # NUEVOS: Items multiplicadores de racha
+    "herradura": {
+        "name": "Herradura de la Suerte",
+        "description": "+25% multiplicador de racha (permanente)",
+        "icon": "🧲",
+        "price": 400,
+        "effect": "streak_multiplier",
+        "value": 0.25,
+        "consumable": False,
+    },
+    "trebol": {
+        "name": "Trebol de 4 Hojas",
+        "description": "+50% multiplicador de racha (permanente)",
+        "icon": "🍀",
+        "price": 750,
+        "effect": "streak_multiplier",
+        "value": 0.50,
+        "consumable": False,
+    },
+    "amuleto_diablo": {
+        "name": "Amuleto del Diablo",
+        "description": "Racha no se pierde en empates (permanente)",
+        "icon": "😈",
+        "price": 600,
+        "effect": "streak_on_push",
+        "consumable": False,
+    },
+    "moneda_maldita": {
+        "name": "Moneda Maldita",
+        "description": "x2 bonus de racha pero +5 estres por victoria",
+        "icon": "🪙",
+        "price": 350,
+        "effect": "cursed_streak",
+        "value": 2.0,
+        "consumable": False,
     },
 }
 
@@ -473,20 +576,25 @@ class PlayerInventory:
 
 
 class Game:
-    def __init__(self, game_id: str, player_name: str):
+    def __init__(self, game_id: str, player_name: str, difficulty: str = "normal"):
         self.id = game_id
         self.player_name = player_name
-        self.player_chips = CONFIG["starting_chips"]
+        self.difficulty = difficulty
+
+        # Obtener configuración de dificultad
+        diff_settings = DIFFICULTY_SETTINGS.get(difficulty, DIFFICULTY_SETTINGS["normal"])
+
+        self.player_chips = diff_settings["starting_chips"]
         self.status = GameStatus.WAITING_FOR_BET
-        self.stress = CONFIG["starting_stress"]
-        
+        self.stress = diff_settings["starting_stress"]
+
         # Sistema de garitos
         self.current_garito = 1
         self.garitos_completed: List[int] = []
-        
+
         # Inventario
         self.inventory = PlayerInventory()
-        
+
         # Estadísticas
         self.wins = 0
         self.losses = 0
@@ -494,7 +602,12 @@ class Game:
         self.rounds = 0
         self.cheats_used = 0
         self.cheats_detected = 0
-        
+
+        # Sistema de Win Streak
+        self.win_streak = 0           # Racha actual de victorias
+        self.max_win_streak = 0       # Racha máxima alcanzada
+        self.last_streak_bonus = 0    # Último bonus obtenido por racha
+
         # Estado de la ronda
         self.deck = Deck(CONFIG["deck_count"])
         self.player_hand: Optional[Hand] = None
@@ -502,15 +615,51 @@ class Game:
         self.current_bet = 0
         self.round_result: Optional[str] = None
         self.round_message: Optional[str] = None
-        
+
         # Estado de trampas esta ronda
         self.dealer_card_revealed = False
         self.peeked_cards: List[Dict] = []
         self.next_card_peeked: Optional[Dict] = None  # Nueva: próxima carta espiada
         self.cheat_used_this_round: Optional[str] = None
-        
+
         # Para rewind
         self.last_round_state: Optional[Dict] = None
+
+    def get_difficulty_settings(self) -> Dict:
+        """Obtiene la configuración de dificultad actual"""
+        return DIFFICULTY_SETTINGS.get(self.difficulty, DIFFICULTY_SETTINGS["normal"])
+
+    def calculate_streak_bonus(self, base_winnings: int, is_blackjack: bool = False) -> tuple:
+        """Calcula el bonus por racha de victorias
+        Retorna: (winnings_con_bonus, streak_bonus_amount, streak_multiplier)
+        """
+        if self.win_streak < 2:
+            return base_winnings, 0, 1.0
+
+        diff = self.get_difficulty_settings()
+        streak_mults = diff["win_streak_multipliers"]
+
+        # Encontrar el multiplicador correcto
+        streak_key = min(self.win_streak, 5)  # Máximo nivel es 5
+        base_multiplier = streak_mults.get(streak_key, 1.0)
+
+        # Aplicar modificadores de items
+        item_streak_bonus = self.inventory.passive_effects.get("streak_multiplier", 0)
+        cursed_bonus = self.inventory.passive_effects.get("cursed_streak", 0)
+
+        # Calcular multiplicador final
+        final_multiplier = base_multiplier * (1 + item_streak_bonus)
+        if cursed_bonus > 0:
+            final_multiplier *= cursed_bonus
+
+        # Bonus extra por blackjack en racha
+        if is_blackjack and self.win_streak >= 2:
+            final_multiplier += diff["blackjack_streak_bonus"]
+
+        streak_bonus = int(base_winnings * (final_multiplier - 1))
+        total_winnings = base_winnings + streak_bonus
+
+        return total_winnings, streak_bonus, final_multiplier
     
     def get_garito(self) -> Dict:
         return GARITOS.get(self.current_garito, GARITOS[1])
@@ -562,17 +711,21 @@ class Game:
         """Calcula la probabilidad de ser detectado al hacer trampa"""
         garito = self.get_garito()
         cheat = TRAMPAS.get(cheat_id, {})
-        
+        diff = self.get_difficulty_settings()
+
         base = garito.get("cheat_detection_base", 0.20)
         modifier = cheat.get("detection_modifier", 0.10)
-        
+
+        # Modificador de dificultad
+        diff_modifier = diff.get("detection_modifier", 0)
+
         # Reducción por objetos pasivos
         reduction = self.inventory.passive_effects.get("reduce_detection", 0)
-        
+
         # El estrés aumenta la detección
         stress_modifier = self.stress / 200  # +0.5 máximo por estrés
-        
-        final = base + modifier + stress_modifier - reduction
+
+        final = base + modifier + diff_modifier + stress_modifier - reduction
         return max(0.05, min(0.95, final))  # Entre 5% y 95%
     
     def attempt_cheat(self, cheat_id: str) -> Dict:
@@ -622,17 +775,22 @@ class Game:
         
         if not guaranteed and roll < detection_chance:
             # ¡Detectado!
+            diff = self.get_difficulty_settings()
             self.cheats_detected += 1
             penalty = self.current_bet  # Pierdes la apuesta actual
-            self.stress = min(CONFIG["max_stress"], self.stress + 15)
-            
+            stress_penalty = diff.get("stress_gain_detected", 15)
+            self.stress = min(CONFIG["max_stress"], self.stress + stress_penalty)
+
+            # Perder racha al ser detectado
+            self.win_streak = 0
+
             result["result"] = CheatResult.DETECTED.value
-            result["message"] = f"¡{self.get_garito()['dealer_name']} te pilló! Pierdes ${penalty}"
+            result["message"] = f"¡{self.get_garito()['dealer_name']} te pillo! Pierdes ${penalty}"
             result["penalty"] = penalty
-            
+
             # Terminar la ronda como pérdida
             self._end_round("loss", f"¡DETECTADO HACIENDO TRAMPA! -${self.current_bet}")
-            
+
             return result
         
         # ¡Éxito! Aplicar efecto
@@ -821,16 +979,29 @@ class Game:
             if self.dealer_hand.is_blackjack:
                 garito = self.get_garito()
                 if "widow_curse" in garito.get("special_rules", []):
-                    self._end_round("loss", "¡LA MALDICIÓN DE LA VIUDA! Empate = Derrota")
+                    self._end_round("loss", "¡LA MALDICION DE LA VIUDA! Empate = Derrota")
                 else:
                     self._end_round("push", "¡DOBLE BLACKJACK! EMPATE")
             else:
-                payout = int(self.current_bet * CONFIG["blackjack_payout"])
+                # Incrementar racha ANTES de calcular bonus
+                self.win_streak += 1
+                self.max_win_streak = max(self.max_win_streak, self.win_streak)
+
+                base_payout = int(self.current_bet * CONFIG["blackjack_payout"])
                 bonus = self.inventory.passive_effects.get("bonus_winnings", 0)
                 if bonus > 0:
-                    payout = int(payout * (1 + bonus))
-                self.player_chips += self.current_bet + payout
-                self._end_round("blackjack", f"¡¡¡BLACKJACK!!! +${payout}")
+                    base_payout = int(base_payout * (1 + bonus))
+
+                # Calcular bonus de racha (con flag de blackjack)
+                final_payout, streak_bonus, streak_mult = self.calculate_streak_bonus(base_payout, is_blackjack=True)
+                self.last_streak_bonus = streak_bonus
+
+                self.player_chips += self.current_bet + final_payout
+
+                if streak_bonus > 0:
+                    self._end_round("blackjack", f"¡¡¡BLACKJACK!!! +${base_payout} +${streak_bonus} RACHA x{streak_mult:.1f}!")
+                else:
+                    self._end_round("blackjack", f"¡¡¡BLACKJACK!!! +${final_payout}")
         else:
             self.status = GameStatus.PLAYER_TURN
     
@@ -887,36 +1058,64 @@ class Game:
         player_value = self.player_hand.calculate_value()
         dealer_value = self.dealer_hand.calculate_value()
         garito = self.get_garito()
-        
+
         # Calcular bonus de ganancias
         bonus = self.inventory.passive_effects.get("bonus_winnings", 0)
-        
+
         # Regla especial: drunk_bonus
         if "drunk_bonus" in garito.get("special_rules", []):
             bonus += 0.10
-        
+
         # Regla especial: devils_game - BJ del dealer = pierdes todo
         if "devils_game" in garito.get("special_rules", []) and self.dealer_hand.is_blackjack:
             total_loss = self.player_chips + self.current_bet
             self.player_chips = 0
+            self.win_streak = 0
             self._end_round("loss", f"¡EL DIABLO TIENE BLACKJACK! Pierdes todo: ${total_loss}")
             return
-        
+
         if self.dealer_hand.is_busted:
-            winnings = int(self.current_bet * (1 + bonus))
-            self.player_chips += self.current_bet + winnings
-            self._end_round("win", f"¡CRUPIER SE PASA! +${winnings}")
+            # Victoria - incrementar racha
+            self.win_streak += 1
+            self.max_win_streak = max(self.max_win_streak, self.win_streak)
+
+            base_winnings = int(self.current_bet * (1 + bonus))
+            final_winnings, streak_bonus, streak_mult = self.calculate_streak_bonus(base_winnings)
+            self.last_streak_bonus = streak_bonus
+
+            self.player_chips += self.current_bet + final_winnings
+            if streak_bonus > 0:
+                self._end_round("win", f"¡CRUPIER SE PASA! +${base_winnings} +${streak_bonus} RACHA x{streak_mult:.1f}!")
+            else:
+                self._end_round("win", f"¡CRUPIER SE PASA! +${final_winnings}")
+
         elif player_value > dealer_value:
-            winnings = int(self.current_bet * (1 + bonus))
-            self.player_chips += self.current_bet + winnings
-            self._end_round("win", f"¡GANAS! {player_value} vs {dealer_value} → +${winnings}")
+            # Victoria - incrementar racha
+            self.win_streak += 1
+            self.max_win_streak = max(self.max_win_streak, self.win_streak)
+
+            base_winnings = int(self.current_bet * (1 + bonus))
+            final_winnings, streak_bonus, streak_mult = self.calculate_streak_bonus(base_winnings)
+            self.last_streak_bonus = streak_bonus
+
+            self.player_chips += self.current_bet + final_winnings
+            if streak_bonus > 0:
+                self._end_round("win", f"¡GANAS! {player_value} vs {dealer_value} → +${base_winnings} +${streak_bonus} RACHA x{streak_mult:.1f}!")
+            else:
+                self._end_round("win", f"¡GANAS! {player_value} vs {dealer_value} → +${final_winnings}")
+
         elif player_value < dealer_value:
             self._end_round("loss", f"PIERDES {player_value} vs {dealer_value} → -${self.current_bet}")
+
         else:
             # Empate
             if "widow_curse" in garito.get("special_rules", []):
-                self._end_round("loss", f"¡MALDICIÓN! Empate = Derrota → -${self.current_bet}")
+                self._end_round("loss", f"¡MALDICION! Empate = Derrota → -${self.current_bet}")
             else:
+                # Amuleto del diablo: racha no se pierde en empates
+                has_streak_on_push = self.inventory.passive_effects.get("streak_on_push", False)
+                if not has_streak_on_push:
+                    self.win_streak = 0
                 self.player_chips += self.current_bet
                 self._end_round("push", f"EMPATE {player_value}")
     
@@ -924,35 +1123,46 @@ class Game:
         self.round_result = result
         self.round_message = message
         self.rounds += 1
-        
+
+        diff = self.get_difficulty_settings()
+
         if result == "win" or result == "blackjack":
             self.wins += 1
-            # Reducir estrés al ganar
-            self.stress = max(0, self.stress - 5)
+            # Reducir estrés al ganar según dificultad
+            stress_reduction = diff.get("stress_reduction_win", 5)
+            self.stress = max(0, self.stress - stress_reduction)
+
+            # Moneda maldita: +5 estrés por victoria si está activa
+            if self.inventory.passive_effects.get("cursed_streak", 0) > 0:
+                self.stress = min(CONFIG["max_stress"], self.stress + 5)
+
         elif result == "loss":
             self.losses += 1
-            # Aumentar estrés al perder
-            self.stress = min(CONFIG["max_stress"], self.stress + 3)
+            # Perder racha
+            self.win_streak = 0
+            # Aumentar estrés al perder según dificultad
+            stress_gain = diff.get("stress_gain_loss", 3)
+            self.stress = min(CONFIG["max_stress"], self.stress + stress_gain)
         else:
             self.pushes += 1
-        
+
         # Tick cooldowns de trampas
         self.inventory.tick_cooldowns()
-        
+
         # Verificar game over - AHORA INCLUYE CHECK DE APUESTA MÍNIMA
         garito = self.get_garito()
         min_bet = garito.get("min_bet", CONFIG["minimum_bet"])
-        
+
         if self.player_chips <= 0:
             self.status = GameStatus.GAME_OVER
             self.round_message = message  # Mantener mensaje original
         elif self.player_chips < min_bet:
             # NUEVO: Game Over si no puedes pagar la apuesta mínima
             self.status = GameStatus.GAME_OVER
-            self.round_message = f"Sin fichas suficientes para la apuesta mínima (${min_bet}). Te echan del garito..."
+            self.round_message = f"Sin fichas suficientes para la apuesta minima (${min_bet}). Te echan del garito..."
         elif self.stress >= CONFIG["max_stress"]:
             self.status = GameStatus.GAME_OVER
-            self.round_message = "¡COLAPSO NERVIOSO! El estrés te consume..."
+            self.round_message = "¡COLAPSO NERVIOSO! El estres te consume..."
         else:
             self.status = GameStatus.ROUND_COMPLETE
     
@@ -977,8 +1187,9 @@ class Game:
     
     def to_dict(self) -> Dict:
         garito = self.get_garito()
+        diff = self.get_difficulty_settings()
         hide_dealer = self.status == GameStatus.PLAYER_TURN and not self.dealer_card_revealed
-        
+
         # Lista de trampas disponibles con estado
         available_cheats = []
         for cheat_id in self.inventory.unlocked_cheats:
@@ -994,7 +1205,21 @@ class Game:
                 "cooldown": self.inventory.cheat_cooldowns.get(cheat_id, 0),
                 "detection_chance": f"{self.calculate_detection_chance(cheat_id)*100:.0f}%" if self.status == GameStatus.PLAYER_TURN else "?",
             })
-        
+
+        # Calcular próximo multiplicador de racha
+        next_streak = self.win_streak + 1
+        streak_mults = diff["win_streak_multipliers"]
+        next_streak_key = min(next_streak, 5)
+        next_multiplier = streak_mults.get(next_streak_key, 1.0) if next_streak >= 2 else 1.0
+
+        # Aplicar modificadores de items al multiplicador mostrado
+        item_streak_bonus = self.inventory.passive_effects.get("streak_multiplier", 0)
+        cursed_bonus = self.inventory.passive_effects.get("cursed_streak", 0)
+        if item_streak_bonus > 0:
+            next_multiplier = next_multiplier * (1 + item_streak_bonus)
+        if cursed_bonus > 0:
+            next_multiplier *= cursed_bonus
+
         return {
             "id": self.id,
             "player_name": self.player_name,
@@ -1007,7 +1232,25 @@ class Game:
             "dealer_hand": self.dealer_hand.to_dict(hide_second=hide_dealer) if self.dealer_hand else None,
             "round_result": self.round_result,
             "round_message": self.round_message,
-            
+
+            # Dificultad
+            "difficulty": {
+                "id": self.difficulty,
+                "name": diff["name"],
+                "description": diff["description"],
+                "icon": diff["icon"],
+            },
+
+            # Win Streak
+            "win_streak": {
+                "current": self.win_streak,
+                "max": self.max_win_streak,
+                "last_bonus": self.last_streak_bonus,
+                "next_multiplier": next_multiplier if next_streak >= 2 else None,
+                "multipliers": diff["win_streak_multipliers"],
+                "blackjack_bonus": diff["blackjack_streak_bonus"],
+            },
+
             # Garito actual
             "garito": {
                 "level": self.current_garito,
@@ -1022,13 +1265,13 @@ class Game:
                 "special_rules": garito.get("special_rules", []),
             },
             "can_advance_garito": self.check_garito_advancement(),
-            
+
             # Inventario y trampas
             "inventory": self.inventory.to_dict(),
             "available_cheats": available_cheats,
             "peeked_cards": self.peeked_cards if self.peeked_cards else None,
-            "next_card_peeked": self.next_card_peeked,  # Nueva: próxima carta espiada
-            
+            "next_card_peeked": self.next_card_peeked,
+
             # Stats
             "stats": {
                 "wins": self.wins,
@@ -1038,7 +1281,7 @@ class Game:
                 "cheats_used": self.cheats_used,
                 "cheats_detected": self.cheats_detected,
             },
-            
+
             "deck_remaining": self.deck.remaining,
             "can_double": self.player_hand.can_double() if self.player_hand and self.status == GameStatus.PLAYER_TURN else False,
             "can_afford_double": self.player_chips >= self.current_bet
@@ -1052,8 +1295,12 @@ class Game:
             "player_chips": self.player_chips,
             "stress": self.stress,
             "status": self.status.value,
+            "difficulty": self.difficulty,
             "current_garito": self.current_garito,
             "garitos_completed": self.garitos_completed,
+            "win_streak": self.win_streak,
+            "max_win_streak": self.max_win_streak,
+            "last_streak_bonus": self.last_streak_bonus,
             "inventory_items": self.inventory.items,
             "inventory_passive_effects": self.inventory.passive_effects,
             "inventory_unlocked_cheats": self.inventory.unlocked_cheats,
@@ -1093,8 +1340,14 @@ class Game:
         game.player_chips = db_game.player_chips
         game.status = GameStatus(db_game.status)
         game.stress = db_game.stress
+        game.difficulty = getattr(db_game, 'difficulty', 'normal') or 'normal'
         game.current_garito = db_game.current_garito
         game.garitos_completed = db_game.garitos_completed or []
+
+        # Restore win streak
+        game.win_streak = getattr(db_game, 'win_streak', 0) or 0
+        game.max_win_streak = getattr(db_game, 'max_win_streak', 0) or 0
+        game.last_streak_bonus = getattr(db_game, 'last_streak_bonus', 0) or 0
 
         # Restore inventory
         game.inventory = PlayerInventory()
@@ -1287,6 +1540,7 @@ async def startup_event():
 # Request Models
 class CreateGameRequest(BaseModel):
     player_name: str = "Forastero"
+    difficulty: str = "normal"  # easy, normal, hard
 
 class PlaceBetRequest(BaseModel):
     amount: int
@@ -1305,8 +1559,13 @@ class ItemRequest(BaseModel):
 def root():
     return {
         "game": "Blackjack Roguelite",
-        "version": "2.1.0 - Etapa 2.1",
-        "features": ["Garitos", "Trampas", "Objetos", "Estrés", "Peek Next Card", "Dealer Images"],
+        "version": "3.0.0 - Etapa 3.0",
+        "features": [
+            "Garitos", "Trampas", "Objetos", "Estres",
+            "Peek Next Card", "Dealer Images",
+            "Sistema de Dificultad", "Win Streak con Multiplicadores",
+            "Items Multiplicadores de Bonus"
+        ],
         "status": "online"
     }
 
@@ -1329,20 +1588,36 @@ def get_items():
     return ITEMS
 
 
+@app.get("/meta/difficulties")
+def get_difficulties():
+    """Info de todos los niveles de dificultad"""
+    return DIFFICULTY_SETTINGS
+
+
 @app.post("/games")
 def create_game(request: CreateGameRequest, db: Session = Depends(get_db)):
+    # Validar dificultad
+    difficulty = request.difficulty if request.difficulty in DIFFICULTY_SETTINGS else "normal"
+
     game_id = str(uuid.uuid4())[:8]
-    game = Game(game_id, request.player_name)
+    game = Game(game_id, request.player_name, difficulty)
 
     # Save to database
     save_game_to_db(game, db)
 
     garito = game.get_garito()
+    diff = game.get_difficulty_settings()
 
     return {
         "game_id": game_id,
         "message": f"Bienvenido a {garito['name']}, {request.player_name}",
         "starting_chips": game.player_chips,
+        "starting_stress": game.stress,
+        "difficulty": {
+            "id": difficulty,
+            "name": diff["name"],
+            "icon": diff["icon"],
+        },
         "garito": garito["name"],
         "dealer": garito["dealer_name"]
     }
